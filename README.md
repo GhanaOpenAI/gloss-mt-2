@@ -20,12 +20,12 @@ At inference time, a post-translation dictionary substitution step detects the p
 
 ---
 
-## 🧠 Supported Models
+## 🧠 Target Models
 
-1. **GLOSS-MT NLLB-200 600M** (`facebook/nllb-200-distilled-600M`):
-   - Fine-tuned bidirectionally: **`en → tw`** and **`tw → en`**.
-2. **GLOSS-MT OPUS-MT en-tw** (`Helsinki-NLP/opus-mt-en-tw`):
-   - Fine-tuned on **`en → tw`**.
+1. **GLOSS-MT OPUS-MT en-tw** (`Helsinki-NLP/opus-mt-en-tw`):
+   - Fine-tuned on **`en → tw`** (75M Marian architecture, ultra-fast & lightweight).
+2. **GLOSS-MT NLLB-200 600M** (`facebook/nllb-200-distilled-600M`):
+   - Fine-tuned on **`en → tw`** (600M distilled multi-lingual architecture).
 
 ---
 
@@ -72,7 +72,7 @@ print("Custom Translation:", res_custom["translation"])
 
 ## 🛠️ Data Preparation & Training on H200
 
-### 1. Build Preserved Dataset
+### 1. Build Preserved Dataset (Already built and cached on H200)
 ```bash
 ./run_build_dataset.sh
 ```
@@ -85,10 +85,7 @@ print("Custom Translation:", res_custom["translation"])
 # Train NLLB-200 600M (en -> tw)
 ./run_train_nllb_600m_en2tw.sh
 
-# Train NLLB-200 600M (tw -> en)
-./run_train_nllb_600m_tw2en.sh
-
-# Or run the full queue:
+# Or run both in queue:
 ./run_all_training.sh
 ```
 
