@@ -38,12 +38,12 @@ def load_data(data_path: str, split: str) -> List[Dict]:
         ds = load_dataset(data_path, split=split)
     return [
         {
-            "id": r["id"],
-            "source": r["source"],
+            "id": r.get("id", f"{split}_{i}"),
+            "source": r.get("input", r.get("source")),
             "target": r["target"],
-            "gold": r.get("gold", r["target"]),
+            "gold": r.get("twi", r.get("gold", r["target"])),
         }
-        for r in ds
+        for i, r in enumerate(ds)
     ]
 
 
