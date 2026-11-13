@@ -1,11 +1,12 @@
 """Build the official GLOSS-MT-2 English -> Twi dataset.
 
 Key Features:
-1. Complete sentences: line packing cuts strictly at sentence/line boundaries (max 512 chars).
-2. Full noun phrases: includes determiners, articles, and demonstratives ('the', 'a', 'this', 'their', 'our').
-3. Clean input: pure English with NO brackets.
-4. Target: fluent Asante Twi translation with the English noun phrases in angle brackets `<...>`.
-5. 64 concurrent workers with Gemini 3.8 Flash (thinkingBudget: 0) and resumable JSONL caching.
+1. Markdown stripped: all headers (##), table pipes/rules, bold/italics (*, **), and blockquotes (>) are removed.
+2. Complete sentences: line packing cuts strictly at sentence boundaries (max 512 chars).
+3. Full noun phrases: includes determiners, articles, and demonstratives ('the', 'a', 'this', 'their', 'our').
+4. Clean input: pure English with NO markdown and NO brackets.
+5. Target: fluent Asante Twi translation with English noun phrases in angle brackets `<...>` (no markdown).
+6. 64 concurrent workers with Gemini 3.8 Flash (thinkingBudget: 0) and resumable JSONL caching.
 """
 
 import argparse
@@ -23,7 +24,6 @@ import spacy
 from datasets import Dataset, DatasetDict
 from huggingface_hub import HfApi
 
-_SPLIT = re.compile(r"(\n\s*)")
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 PROMPT_TEMPLATE = """Below is an English text, its Asante Twi (Akan) translation, and a list of English noun phrases from the text.
@@ -53,15 +53,30 @@ Noun phrases:
 {phrases}"""
 
 
-def split_lines(text: str) -> Tuple[List[str], List[str]]:
-    parts = _SPLIT.split(text)
-    lines = [parts[i] for i in range(0, len(parts), 2)]
-    seps = [parts[i] for i in range(1, len(parts), 2)] + [""]
-    return lines, seps
-
-
-def join_span(lines: List[str], seps: List[str], start: int, end: int) -> str:
-    return "".join(lines[i] + seps[i] for i in range(start, end))
+def clean_line_markdown(line: str) -> str:
+    """Strip all markdown formatting, tables, headers, and bullet markers."""
+    # Remove table index rows like "| 14 | "
+    line = re.sub(r"^\s*\|\s*[\d#]+\s*\|\s*", "", line)
+    # Remove table rules
+    if re.search(r"^[\s|:-]+$", line) or "|---" in line:
+        return ""
+    # Remove table pipes
+    line = re.sub(r"^\s*\||\|\s*$", "", line)
+    line = line.replace("|", " ")
+    # Remove headers (##, ###)
+    line = re.sub(r"^\s*#{1,6}\s*", "", line)
+    # Remove blockquotes
+    line = re.sub(r"^\s*>\s*", "", line)
+    # Remove bold/italics (*, **)
+    line = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", line)
+    # Remove backticks
+    line = re.sub(r"`([^`]+)`", r"\1", line)
+    # Remove list bullet markers like "- ", "* " at start
+    line = re.sub(r"^\s*[-*•]\s+", "", line)
+    cleaned = re.sub(r"[ \t]+", " ", line).strip()
+    if cleaned.lower() in ("sentence", "#", "sentences", "title", "text", "sector"):
+        return ""
+    return cleaned
 
 
 def pack_lines_chars(lines: List[str], max_chars: int = 512) -> List[Tuple[int, int]]:
@@ -70,10 +85,10 @@ def pack_lines_chars(lines: List[str], max_chars: int = 512) -> List[Tuple[int, 
     start, cur = 0, 0
     for i, line in enumerate(lines):
         line_len = len(line)
-        if cur + line_len > max_chars and cur > 0:
+        if cur + line_len + 1 > max_chars and cur > 0:
             spans.append((start, i))
             start, cur = i, 0
-        cur += line_len
+        cur += line_len + 1
     if cur > 0 or not spans:
         spans.append((start, len(lines)))
     return spans
@@ -188,10 +203,10 @@ def main():
     if not api_key:
         sys.exit("Error: GEMINI_API_KEY is not set.")
 
-    print(f"Loading spaCy model en_core_web_sm...")
+    print("Loading spaCy model en_core_web_sm...")
     nlp = spacy.load("en_core_web_sm", disable=["ner", "lemmatizer"])
 
-    print(f"Chunking parallel documents (max {args.max_chars} chars, complete sentences)...")
+    print(f"Chunking parallel documents (stripping markdown, max {args.max_chars} chars, complete sentences)...")
     t0 = time.time()
     splits_chunks = {}
     all_chunks = []
@@ -207,16 +222,29 @@ def main():
         chunks = []
         skipped = 0
         for r in rows:
-            en_lines, en_seps = split_lines(r["english"])
-            tw_lines, tw_seps = split_lines(r["translation"])
-            if len(en_lines) != len(tw_lines):
+            raw_en_lines = r["english"].splitlines()
+            raw_tw_lines = r["translation"].splitlines()
+            if len(raw_en_lines) != len(raw_tw_lines):
                 skipped += 1
                 continue
 
+            clean_en_lines = [clean_line_markdown(l) for l in raw_en_lines]
+            clean_tw_lines = [clean_line_markdown(l) for l in raw_tw_lines]
+
+            # Filter out lines that became empty
+            paired_lines = [
+                (e, t) for e, t in zip(clean_en_lines, clean_tw_lines) if e and t
+            ]
+            if not paired_lines:
+                continue
+
+            en_lines = [p[0] for p in paired_lines]
+            tw_lines = [p[1] for p in paired_lines]
+
             spans = pack_lines_chars(en_lines, max_chars=args.max_chars)
             for s, e in spans:
-                en_c = join_span(en_lines, en_seps, s, e).strip()
-                tw_c = join_span(tw_lines, tw_seps, s, e).strip()
+                en_c = " ".join(en_lines[s:e]).strip()
+                tw_c = " ".join(tw_lines[s:e]).strip()
                 if not en_c or not tw_c:
                     continue
 
@@ -257,11 +285,10 @@ def main():
                 continue
 
             tw_target = res["target_twi"].strip()
-            # Clean validation: must have brackets in target
+            # Must contain brackets in target
             if not pattern.search(tw_target):
                 continue
 
-            # Ensure brackets in target are closed properly
             if tw_target.count("<") != tw_target.count(">"):
                 continue
 
@@ -307,24 +334,24 @@ configs:
     path: data/test-*
 ---
 
-# GLOSS-MT-2: High-Quality English → Asante Twi (Akan) Parallel Dataset
+# GLOSS-MT-2: English → Asante Twi (Akan) Parallel Dataset
 
-Contextually aligned English → Asante Twi parallel dataset for **GLOSS-MT-2** with full noun phrase preservation and complete sentences (max 512 characters).
+High-quality, clean parallel dataset for **GLOSS-MT-2** with full noun phrase preservation (including determiners/articles), complete sentences (max 512 characters), and stripped markdown formatting.
 
 ### Paradigm
-- **Input (`input`):** Raw, natural English sentence with **NO brackets** (zero preprocessing):
-  `## It reached a small afternoon, and the news reporters went to the Kejetia market place. They went to see how the trade is there now. This matter is heavy.`
+- **Input (`input`):** Raw, natural English sentence with **NO brackets** and **NO markdown** (zero preprocessing):
+  `It reached a small afternoon, and the news reporters went to the Kejetia market place. They went to see how the trade is there now. This matter is heavy.`
 - **Target (`target`):** Fluent Asante Twi translation using the complete **English noun phrases with determiners/articles** in angle brackets:
-  `## Ɛduruu <a small afternoon>, na <the news reporters> nsrane kɔɔ <the Kejetia market place>. Wɔkɔhwɛɛ sɛnea <the trade> teɛ wɔ hɔ seisei. <This matter> yɛ duru.`
-- **Clean Reference Target (`twi`):** `## Ɛduruu owia ketewa bi, na amaneɛbɔ adwumayɛfoɔ no nsrane kɔɔ Kejetia dwadibea hɔ. Wɔkɔhwɛɛ sɛnea dwadie no teɛ wɔ hɔ seisei. Asɛm yi yɛ duru.`
-- **Clean Reference Source (`english`):** `## It reached a small afternoon, and the news reporters went to the Kejetia market place. They went to see how the trade is there now. This matter is heavy.`
+  `Ɛduruu <a small afternoon>, na <the news reporters> nsrane kɔɔ <the Kejetia market place>. Wɔkɔhwɛɛ sɛnea <the trade> teɛ wɔ hɔ seisei. <This matter> yɛ duru.`
+- **Clean Reference Target (`twi`):** `Ɛduruu owia ketewa bi, na amaneɛbɔ adwumayɛfoɔ no nsrane kɔɔ Kejetia dwadibea hɔ. Wɔkɔhwɛɛ sɛnea dwadie no teɛ wɔ hɔ seisei. Asɛm yi yɛ duru.`
+- **Clean Reference Source (`english`):** `It reached a small afternoon, and the news reporters went to the Kejetia market place. They went to see how the trade is there now. This matter is heavy.`
 
 ### Split Statistics
 | Split | Samples | Length Constraint |
 |---|---|---|
-| **train** | {len(ds_splits['train']):,} | Complete sentences $\le$ 512 characters |
-| **validation** | {len(ds_splits['validation']):,} | Complete sentences $\le$ 512 characters |
-| **test** | {len(ds_splits['test']):,} | Complete sentences $\le$ 512 characters |
+| **train** | {len(ds_splits['train']):,} | Complete sentences $\le$ 512 characters (no markdown) |
+| **validation** | {len(ds_splits['validation']):,} | Complete sentences $\le$ 512 characters (no markdown) |
+| **test** | {len(ds_splits['test']):,} | Complete sentences $\le$ 512 characters (no markdown) |
 | **Total** | **{sum(len(v) for v in ds_splits.values()):,}** | 100% complete grammatical units |
 
 ### Code Repository
