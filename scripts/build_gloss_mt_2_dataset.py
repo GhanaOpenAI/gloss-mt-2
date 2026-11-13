@@ -3,9 +3,10 @@
 Key Features:
 1. Markdown stripped: all headers (##), table pipes/rules, bold/italics (*, **), and blockquotes (>) are removed.
 2. Complete sentences: line packing cuts strictly at sentence boundaries (max 512 chars).
-3. Full noun phrases: includes determiners, articles, and demonstratives ('the', 'a', 'this', 'their', 'our').
+3. Base noun phrases only in brackets: no articles/determiners inside brackets.
+   - Example: `<government> no`, `<news reporters> no`, `<matter> yi`, `sɛ <soldier>`.
 4. Clean input: pure English with NO markdown and NO brackets.
-5. Target: fluent Asante Twi translation with English noun phrases in angle brackets `<...>` (no markdown).
+5. Target: fluent Asante Twi translation with base English noun phrases in angle brackets `<...>` and Twi determiners outside.
 6. 64 concurrent workers with Gemini 3.8 Flash (thinkingBudget: 0) and resumable JSONL caching.
 """
 
@@ -25,27 +26,35 @@ import spacy
 from datasets import Dataset, DatasetDict
 from huggingface_hub import HfApi
 
+_SPLIT = re.compile(r"(\n\s*)")
+_LEADING_ARTICLES = re.compile(r"^(?:the|a|an|this|that|these|those)\s+", re.IGNORECASE)
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-PROMPT_TEMPLATE = """Below is an English text, its Asante Twi translation, and a list of English noun phrases.
+PROMPT_TEMPLATE = """Below is an English text, its Asante Twi translation, and a list of English base noun phrases.
 
-Grammar & Bracketing Rules:
-1. Definite articles and demonstratives ('the', 'this', 'that', 'these', 'those') stay WITH the noun inside the brackets:
-   Example: <the news reporters>, <this matter>, <the trade>, <these projects>.
-2. Indefinite articles ('a', 'an') MUST NOT be inside the brackets. Keep them outside:
-   Example: a <soldier>, a <small afternoon>, an <opportunity>.
-3. In the Twi target, replace the corresponding Twi translation with the English noun phrase using these bracketing rules:
-   - For definite/demonstrative phrases: replace the full Twi phrase (including 'no', 'yi') with <the ...> or <this ...>:
-     Example: 'amaneɛbɔ adwumayɛfoɔ no' -> <the news reporters>
-     Example: 'Asɛm yi' -> <this matter>
-   - For indefinite phrases: only the noun is in brackets, keeping any indefinite particle ('bi') or preposition outside:
-     Example: 'sɛ asrafoɔ' -> sɛ a <soldier> (or <soldier> bi)
-     Example: 'owia ketewa bi' -> a <small afternoon>
-4. Never nest brackets. Do not change the surrounding words.
+CRITICAL Grammar & Bracketing Rules:
+1. ONLY the base noun / noun phrase must be inside the angle brackets.
+   DO NOT include any articles or determiners ('the', 'a', 'an', 'this', 'that', 'these', 'those') inside the brackets!
+   - Examples of correct bracketing:
+     - '<government> no' (NOT '<the government>')
+     - '<news reporters> no' (NOT '<the news reporters>')
+     - '<matter> yi' (NOT '<this matter>')
+     - 'sɛ <soldier>' (NOT '<a soldier>')
+     - '<trade> no' (NOT '<the trade>')
+     - '<nation> yi' (NOT '<this nation>')
+
+2. In the Twi target sentence, replace only the translated noun with the English base noun in angle brackets, keeping the Twi determiners ('no', 'yi', 'bi', etc.) in Twi outside the brackets:
+   - 'aban no' becomes '<government> no'
+   - 'amaneɛbɔ adwumayɛfoɔ no' becomes '<news reporters> no'
+   - 'asɛm yi' becomes '<matter> yi'
+   - 'dwadie no' becomes '<trade> no'
+   - 'ɔman yi' becomes '<nation> yi'
+
+3. Never nest brackets. Do not change any surrounding words.
 
 Return ONLY a JSON object with:
-- "mapping": English noun phrase -> matching Twi span (or null)
-- "target_twi": Twi text with the English noun phrases bracketed according to the rules above.
+- "mapping": English base noun -> matching Twi noun span (excluding determiners like 'no', 'yi', 'bi')
+- "target_twi": Twi text where ONLY the base nouns are in angle brackets <noun>, with all Twi determiners kept outside.
 
 English:
 {en}
@@ -98,8 +107,8 @@ def pack_lines_chars(lines: List[str], max_chars: int = 512) -> List[Tuple[int, 
     return spans
 
 
-def extract_full_noun_phrases(text: str, nlp) -> List[str]:
-    """Extract complete noun phrases with determiners/articles, filtering out bare pronouns."""
+def extract_base_noun_phrases(text: str, nlp) -> List[str]:
+    """Extract base noun phrases without articles or determiners."""
     doc = nlp(text)
     phrases = []
     seen = set()
@@ -108,9 +117,10 @@ def extract_full_noun_phrases(text: str, nlp) -> List[str]:
             continue
         raw_clean = re.sub(r"\s+", " ", chunk.text).strip()
         raw_clean = re.sub(r"^[\W_]+|[\W_]+$", "", raw_clean)
-        if len(raw_clean) >= 2 and raw_clean.lower() not in seen and re.search(r"[a-zA-Z]{2,}", raw_clean):
-            seen.add(raw_clean.lower())
-            phrases.append(raw_clean)
+        base = _LEADING_ARTICLES.sub("", raw_clean).strip()
+        if len(base) >= 2 and base.lower() not in seen and re.search(r"[a-zA-Z]{2,}", base):
+            seen.add(base.lower())
+            phrases.append(base)
     return phrases
 
 
@@ -217,7 +227,7 @@ def main():
         all_chunks = data["all"]
         print(f"Loaded {len(all_chunks):,} pre-extracted chunks in {time.time()-t0:.2f}s", flush=True)
     else:
-        print(f"Loading spaCy model en_core_web_sm...", flush=True)
+        print("Loading spaCy model en_core_web_sm...", flush=True)
         nlp = spacy.load("en_core_web_sm", disable=["ner", "lemmatizer"])
 
         print(f"Chunking parallel documents (stripping markdown, max {args.max_chars} chars, complete sentences)...", flush=True)
@@ -245,7 +255,6 @@ def main():
                 clean_en_lines = [clean_line_markdown(l) for l in raw_en_lines]
                 clean_tw_lines = [clean_line_markdown(l) for l in raw_tw_lines]
 
-                # Filter out lines that became empty
                 paired_lines = [
                     (e, t) for e, t in zip(clean_en_lines, clean_tw_lines) if e and t
                 ]
@@ -262,7 +271,7 @@ def main():
                     if not en_c or not tw_c:
                         continue
 
-                    ph = extract_full_noun_phrases(en_c, nlp)
+                    ph = extract_base_noun_phrases(en_c, nlp)
                     k = chunk_key(en_c, tw_c)
                     chunk_obj = {
                         "en": en_c,
@@ -303,7 +312,6 @@ def main():
                 continue
 
             tw_target = res["target_twi"].strip()
-            # Must contain brackets in target
             if not pattern.search(tw_target):
                 continue
 
@@ -317,13 +325,13 @@ def main():
                 "twi": c["tw"],
             })
 
-        print(f"Final valid {split} split: {len(rows):,} pairs (of {len(chunks):,} chunks)")
+        print(f"Final valid {split} split: {len(rows):,} pairs (of {len(chunks):,} chunks)", flush=True)
         ds_splits[split] = Dataset.from_list(rows)
 
     ds_dict = DatasetDict(ds_splits)
 
     os.makedirs(args.out_dir, exist_ok=True)
-    print(f"Saving dataset locally to {args.out_dir}...")
+    print(f"Saving dataset locally to {args.out_dir}...", flush=True)
     ds_dict.save_to_disk(args.out_dir)
 
     CARD = f"""---
@@ -354,22 +362,22 @@ configs:
 
 # GLOSS-MT-2: English → Asante Twi (Akan) Parallel Dataset
 
-High-quality, clean parallel dataset for **GLOSS-MT-2** with full noun phrase preservation (including determiners/articles), complete sentences (max 512 characters), and stripped markdown formatting.
+High-quality parallel dataset for **GLOSS-MT-2** with base noun phrase preservation (no determiners inside brackets; determiners kept in Twi), complete sentences (max 512 characters), and stripped markdown formatting.
 
 ### Paradigm
 - **Input (`input`):** Raw, natural English sentence with **NO brackets** and **NO markdown** (zero preprocessing):
-  `It reached a small afternoon, and the news reporters went to the Kejetia market place. They went to see how the trade is there now. This matter is heavy.`
-- **Target (`target`):** Fluent Asante Twi translation using the complete **English noun phrases with determiners/articles** in angle brackets:
-  `Ɛduruu <a small afternoon>, na <the news reporters> nsrane kɔɔ <the Kejetia market place>. Wɔkɔhwɛɛ sɛnea <the trade> teɛ wɔ hɔ seisei. <This matter> yɛ duru.`
-- **Clean Reference Target (`twi`):** `Ɛduruu owia ketewa bi, na amaneɛbɔ adwumayɛfoɔ no nsrane kɔɔ Kejetia dwadibea hɔ. Wɔkɔhwɛɛ sɛnea dwadie no teɛ wɔ hɔ seisei. Asɛm yi yɛ duru.`
-- **Clean Reference Source (`english`):** `It reached a small afternoon, and the news reporters went to the Kejetia market place. They went to see how the trade is there now. This matter is heavy.`
+  `It reached a small afternoon, and the news reporters went to the Kejetia market place. They went to see how the trade is there now. This matter is heavy. The government announced that he wants to serve this nation as a soldier.`
+- **Target (`target`):** Fluent Asante Twi translation using the base **English noun phrases** in angle brackets `<noun>` with Twi determiners outside:
+  `Ɛduruu <afternoon> ketewa bi, na <news reporters> no nsrane kɔɔ <Kejetia market place> hɔ. Wɔkɔhwɛɛ sɛnea <trade> no teɛ wɔ hɔ seisei. <matter> yi yɛ duru. <government> no de too dwa sɛ ɔpɛ sɛ ɔsom <nation> yi sɛ <soldier>.`
+- **Clean Reference Target (`twi`):** `Ɛduruu owia ketewa bi, na amaneɛbɔ adwumayɛfoɔ no nsrane kɔɔ Kejetia dwadibea hɔ. Wɔkɔhwɛɛ sɛnea dwadie no teɛ wɔ hɔ seisei. Asɛm yi yɛ duru. Aban no de too dwa sɛ ɔpɛ sɛ ɔsom ɔman yi sɛ asrafoɔ.`
+- **Clean Reference Source (`english`):** `It reached a small afternoon, and the news reporters went to the Kejetia market place. They went to see how the trade is there now. This matter is heavy. The government announced that he wants to serve this nation as a soldier.`
 
 ### Split Statistics
 | Split | Samples | Length Constraint |
 |---|---|---|
-| **train** | {len(ds_splits['train']):,} | Complete sentences $\le$ 512 characters (no markdown) |
-| **validation** | {len(ds_splits['validation']):,} | Complete sentences $\le$ 512 characters (no markdown) |
-| **test** | {len(ds_splits['test']):,} | Complete sentences $\le$ 512 characters (no markdown) |
+| **train** | {len(ds_splits['train']):,} | Complete sentences $\le$ 512 characters |
+| **validation** | {len(ds_splits['validation']):,} | Complete sentences $\le$ 512 characters |
+| **test** | {len(ds_splits['test']):,} | Complete sentences $\le$ 512 characters |
 | **Total** | **{sum(len(v) for v in ds_splits.values()):,}** | 100% complete grammatical units |
 
 ### Code Repository
@@ -379,7 +387,7 @@ High-quality, clean parallel dataset for **GLOSS-MT-2** with full noun phrase pr
         f.write(CARD)
 
     if args.push:
-        print(f"Pushing dataset to Hugging Face {args.push}...")
+        print(f"Pushing dataset to Hugging Face {args.push}...", flush=True)
         ds_dict.push_to_hub(args.push)
         api = HfApi()
         api.upload_file(
@@ -388,9 +396,9 @@ High-quality, clean parallel dataset for **GLOSS-MT-2** with full noun phrase pr
             repo_id=args.push,
             repo_type="dataset",
         )
-        print(f"Successfully published to https://huggingface.co/datasets/{args.push}!")
+        print(f"Successfully published to https://huggingface.co/datasets/{args.push}!", flush=True)
 
-    print(f"Pipeline complete in {time.time()-t0:.1f}s!")
+    print(f"Pipeline complete in {time.time()-t0:.1f}s!", flush=True)
 
 
 if __name__ == "__main__":
