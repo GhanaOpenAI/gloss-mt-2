@@ -1,4 +1,4 @@
-"""Build and push the high-quality GLOSS-MT-2 dataset to Hugging Face.
+"""Build and push the clean high-quality GLOSS-MT-2 dataset to Hugging Face.
 
 Every sentence pair comes directly from contextual document alignment:
   - input:   Pure, natural English (NO brackets, no preprocessing):
@@ -7,7 +7,6 @@ Every sentence pair comes directly from contextual document alignment:
              "12. <Police> no kɔ so kyerɛ sɛ <men> mmienu no bɛkɔ <court> na wɔabue <case> no."
   - twi:     Clean human Asante Twi gold reference without brackets.
   - english: Clean human English gold reference without brackets.
-  - terms:   Exact noun phrase pairs extracted from this sentence.
 """
 
 import json
@@ -35,7 +34,7 @@ def format_clean_pair(en, tw, al):
             ep_s = ep.strip()
             ts_s = ts.strip()
             twi_to_en[ts_s.lower()] = ep_s
-            valid_pairs.append({"english": ep_s, "twi": ts_s})
+            valid_pairs.append((ep_s, ts_s))
 
     def sub_tw(m):
         tw_t = m.group(1).strip()
@@ -87,7 +86,6 @@ def main():
                 "target": tw_target,
                 "english": en,
                 "twi": tw,
-                "terms": terms,
             })
 
         print(f"  {split}: {len(rows):,} quality pairs")
@@ -127,7 +125,7 @@ configs:
 
 # GLOSS-MT-2: High-Quality English → Asante Twi (Akan) Parallel Dataset
 
-High-quality parallel dataset for **GLOSS-MT-2**, constructed from document-aligned sentence pairs (news, finance budgets, legal texts, health reports, and narratives).
+High-quality parallel dataset for **GLOSS-MT-2**, constructed strictly from sentence pairs where English noun phrases were extracted directly from the sentence and aligned to their exact contextual translations in the matching Twi reference.
 
 ### Paradigm
 - **Input (`input`):** Raw, natural English sentence with **NO brackets** (zero preprocessing):
@@ -140,7 +138,7 @@ High-quality parallel dataset for **GLOSS-MT-2**, constructed from document-alig
 ### Split Statistics
 | Split | Samples | Preserved Nouns |
 |---|---|---|
-| **train** | {len(splits['train']):,} | 100% contextually aligned |
+| **train** | {len(splits['train']):,} | 100% contextually aligned sentence pairs |
 | **validation** | {len(splits['validation']):,} | Held-out evaluation set |
 | **test** | {len(splits['test']):,} | Held-out benchmark test set |
 | **Total** | **{sum(len(v) for v in splits.values()):,}** | |
