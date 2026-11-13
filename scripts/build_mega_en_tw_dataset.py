@@ -1,17 +1,17 @@
 """Build the largest high-quality English -> Twi training dataset for GLOSS-MT-2.
 
 Format:
-  - input:  English sentence with the ENGLISH noun phrases enclosed in angle brackets:
-            "## The <history> about what is happening with our <money> is something we need to read carefully."
-  - target: Asante Twi translation that uses the ENGLISH noun phrases in angle brackets:
-            "## <History> a ɛfa nea ɛrekɔ so wɔ yɛn <money> ho no yɛ nea ɛhia sɛ yɛkenkan no yiye."
+  - input:   Pure, natural English sentence with NO brackets (no preprocessing):
+             "Spain produces oil than any other country in the world."
+  - target:  Asante Twi translation that uses the ENGLISH noun phrases in angle brackets:
+             "<World> nyinaa no, <Spain> na wonya <oil> fi ngodua mu sen ɔman biara."
   - english: Clean unbracketed English sentence.
   - twi:     Clean human Asante Twi reference.
 
 Strict Quality Criteria:
   - Both English and Twi sentences are 6 to 100 words in length.
   - No captions, study notes, or boilerplate headers.
-  - Bracketed terms are identical on both sides: set(terms_in_input) == set(terms_in_target).
+  - Target contains at least one valid bracketed term: re.search(r"<[^<>\n]+>", target).
   - Deduplicated by normalized text.
 """
 
@@ -70,39 +70,30 @@ def load_chunk_dataset(dataset_name: str, align_cache_path: str) -> List[Dict]:
 
             mapping = al["mapping"]
             valid_pairs = sorted(
-                [(ep.strip(), ts.strip()) for ep, ts in mapping.items() if ts and isinstance(ts, str) and ts.strip()],
+                [(ts.strip(), ep.strip()) for ep, ts in mapping.items() if ts and isinstance(ts, str) and ts.strip()],
                 key=lambda x: len(x[0]),
                 reverse=True,
             )
             if not valid_pairs:
                 continue
 
-            # 1. Bracket English noun phrases in English text
-            alts_en = [r"\s+".join(map(re.escape, p.split())) for p, s in valid_pairs]
-            pat_en = re.compile(r"(?<!\w)(?:" + "|".join(alts_en) + r")(?!\w)", re.IGNORECASE)
-            en_input = pat_en.sub(lambda m: f"<{m.group(0)}>", en)
-
-            # 2. In Twi, replace each twi_span with <english_phrase>!
-            twi_to_en = {s.lower(): p for p, s in valid_pairs}
-            alts_tw = [r"\s+".join(map(re.escape, s.split())) for p, s in valid_pairs]
-            alts_tw.sort(key=len, reverse=True)
+            # In Twi, replace each twi_span with <english_phrase>!
+            table = {k.lower(): v for k, v in valid_pairs}
+            alts_tw = [r"\s+".join(map(re.escape, k.split())) for k, v in valid_pairs]
             pat_tw = re.compile(r"(?<!\w)(?:" + "|".join(alts_tw) + r")(?!\w)", re.IGNORECASE)
 
             def sub_tw(m):
                 matched = m.group(0)
-                en_p = twi_to_en.get(matched.lower(), matched)
+                en_p = table.get(matched.lower(), matched)
                 if matched[:1].isupper() and not en_p[:1].isupper():
                     en_p = en_p[:1].upper() + en_p[1:]
                 return f"<{en_p}>"
 
             tw_target = pat_tw.sub(sub_tw, tw)
 
-            # Verify brackets
-            b_in = PATTERN.findall(en_input)
+            # Must have at least one bracketed English term in the Twi target
             b_tgt = PATTERN.findall(tw_target)
-            if not b_in or not b_tgt:
-                continue
-            if set(t.lower().strip() for t in b_in) != set(t.lower().strip() for t in b_tgt):
+            if not b_tgt:
                 continue
 
             key = (normalize(en), normalize(tw))
@@ -111,8 +102,8 @@ def load_chunk_dataset(dataset_name: str, align_cache_path: str) -> List[Dict]:
             seen.add(key)
 
             pairs.append({
-                "input": en_input,
-                "target": tw_target,
+                "input": en,         # NO brackets in input!
+                "target": tw_target,  # Twi translation with English noun phrases in <...>
                 "english": en,
                 "twi": tw,
                 "source": "gloss-mt-doc-chunks",
@@ -181,12 +172,7 @@ def load_afrigloss_pairs(
                 if not mapping:
                     continue
 
-                # 1. English input: bracket English noun phrases
-                alts_en = [r"\s+".join(map(re.escape, p.split())) for p in sorted(mapping.keys(), key=len, reverse=True)]
-                pat_en = re.compile(r"(?<!\w)(?:" + "|".join(alts_en) + r")(?!\w)", re.IGNORECASE)
-                en_input = pat_en.sub(lambda m: f"<{m.group(0)}>", src_raw)
-
-                # 2. Twi target: in tgt, replace each <twi_term> with <en_phrase>
+                # Twi target: in tgt, replace each <twi_term> with <en_phrase>
                 twi_to_en = {v.lower(): k for k, v in mapping.items()}
 
                 def sub_tw(m):
@@ -198,12 +184,8 @@ def load_afrigloss_pairs(
 
                 tw_target = PATTERN.sub(sub_tw, tgt)
 
-                # Verify brackets on both sides
-                b_in = PATTERN.findall(en_input)
                 b_tgt = PATTERN.findall(tw_target)
-                if not b_in or not b_tgt:
-                    continue
-                if set(t.lower().strip() for t in b_in) != set(t.lower().strip() for t in b_tgt):
+                if not b_tgt:
                     continue
 
                 key = (normalize(src_raw), normalize(tgt_ref))
@@ -212,8 +194,8 @@ def load_afrigloss_pairs(
                 seen_keys.add(key)
 
                 pairs.append({
-                    "input": en_input,
-                    "target": tw_target,
+                    "input": src_raw,     # NO brackets in input!
+                    "target": tw_target,  # Twi translation with English noun phrases in <...>
                     "english": src_raw,
                     "twi": tgt_ref,
                     "source": "afrigloss-sentence-corpus",
@@ -261,7 +243,7 @@ def main():
 
     t0 = time.time()
 
-    # 1. Load document chunks with English nouns bracketed in English & used in Twi target
+    # 1. Load document chunks (input: clean English, target: Twi with <en_noun>)
     chunk_items = load_chunk_dataset(args.chunk_dataset, args.align_cache)
     seen_keys = {(normalize(it["english"]), normalize(it["twi"])) for it in chunk_items}
 
@@ -326,8 +308,8 @@ configs:
 Massive, high-quality parallel dataset for training **GLOSS-MT-2** models.
 
 ### Paradigm
-- **Input (`input`):** English source with the **English noun phrases** enclosed in angle brackets:
-  `<Spain> produces <oil> than any other country in the <world>.`
+- **Input (`input`):** Raw English sentence with **NO brackets** (zero preprocessing):
+  `Spain produces oil than any other country in the world.`
 - **Target (`target`):** Fluent Asante Twi translation using the **English noun phrases** in angle brackets:
   `<World> nyinaa no, <Spain> na wonya <oil> fi ngodua mu sen ɔman biara.`
 - **Clean Reference Source (`english`):** `Spain produces oil than any other country in the world.`
@@ -339,7 +321,7 @@ Massive, high-quality parallel dataset for training **GLOSS-MT-2** models.
 | **train** | {len(splits['train']):,} | Document chunks + sentence pairs |
 | **validation** | {len(splits['validation']):,} | Held-out evaluation pairs |
 | **test** | {len(splits['test']):,} | Held-out benchmark test set |
-| **Total** | **{len(all_items):,}** | 100% verified bracket matches |
+| **Total** | **{len(all_items):,}** | |
 
 ### License
 CC BY-NC 4.0
