@@ -204,66 +204,80 @@ def main():
     if not api_key:
         sys.exit("Error: GEMINI_API_KEY is not set.")
 
-    print("Loading spaCy model en_core_web_sm...")
-    nlp = spacy.load("en_core_web_sm", disable=["ner", "lemmatizer"])
+    chunks_cache_file = os.path.join(os.path.dirname(args.cache_path) or ".", "chunks_cache_512.json")
+    if os.path.exists(chunks_cache_file):
+        print(f"Loading pre-extracted chunks from {chunks_cache_file}...", flush=True)
+        t0 = time.time()
+        with open(chunks_cache_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        splits_chunks = data["splits"]
+        all_chunks = data["all"]
+        print(f"Loaded {len(all_chunks):,} pre-extracted chunks in {time.time()-t0:.2f}s", flush=True)
+    else:
+        print(f"Loading spaCy model en_core_web_sm...", flush=True)
+        nlp = spacy.load("en_core_web_sm", disable=["ner", "lemmatizer"])
 
-    print(f"Chunking parallel documents (stripping markdown, max {args.max_chars} chars, complete sentences)...")
-    t0 = time.time()
-    splits_chunks = {}
-    all_chunks = []
+        print(f"Chunking parallel documents (stripping markdown, max {args.max_chars} chars, complete sentences)...", flush=True)
+        t0 = time.time()
+        splits_chunks = {}
+        all_chunks = []
 
-    for split in ["train", "validation", "test"]:
-        fp = os.path.join(args.data_dir, f"{split}.jsonl")
-        if not os.path.exists(fp):
-            continue
-
-        with open(fp, "r", encoding="utf-8") as f:
-            rows = [json.loads(line) for line in f if line.strip()]
-
-        chunks = []
-        skipped = 0
-        for r in rows:
-            raw_en_lines = r["english"].splitlines()
-            raw_tw_lines = r["translation"].splitlines()
-            if len(raw_en_lines) != len(raw_tw_lines):
-                skipped += 1
+        for split in ["train", "validation", "test"]:
+            fp = os.path.join(args.data_dir, f"{split}.jsonl")
+            if not os.path.exists(fp):
                 continue
 
-            clean_en_lines = [clean_line_markdown(l) for l in raw_en_lines]
-            clean_tw_lines = [clean_line_markdown(l) for l in raw_tw_lines]
+            with open(fp, "r", encoding="utf-8") as f:
+                rows = [json.loads(line) for line in f if line.strip()]
 
-            # Filter out lines that became empty
-            paired_lines = [
-                (e, t) for e, t in zip(clean_en_lines, clean_tw_lines) if e and t
-            ]
-            if not paired_lines:
-                continue
-
-            en_lines = [p[0] for p in paired_lines]
-            tw_lines = [p[1] for p in paired_lines]
-
-            spans = pack_lines_chars(en_lines, max_chars=args.max_chars)
-            for s, e in spans:
-                en_c = " ".join(en_lines[s:e]).strip()
-                tw_c = " ".join(tw_lines[s:e]).strip()
-                if not en_c or not tw_c:
+            chunks = []
+            skipped = 0
+            for r in rows:
+                raw_en_lines = r["english"].splitlines()
+                raw_tw_lines = r["translation"].splitlines()
+                if len(raw_en_lines) != len(raw_tw_lines):
+                    skipped += 1
                     continue
 
-                ph = extract_full_noun_phrases(en_c, nlp)
-                k = chunk_key(en_c, tw_c)
-                chunk_obj = {
-                    "en": en_c,
-                    "tw": tw_c,
-                    "phrases": ph,
-                    "key": k,
-                }
-                chunks.append(chunk_obj)
-                all_chunks.append(chunk_obj)
+                clean_en_lines = [clean_line_markdown(l) for l in raw_en_lines]
+                clean_tw_lines = [clean_line_markdown(l) for l in raw_tw_lines]
 
-        splits_chunks[split] = chunks
-        print(f"Split {split}: {len(rows)-skipped:,} docs -> {len(chunks):,} chunks (skipped {skipped} mismatched)")
+                # Filter out lines that became empty
+                paired_lines = [
+                    (e, t) for e, t in zip(clean_en_lines, clean_tw_lines) if e and t
+                ]
+                if not paired_lines:
+                    continue
 
-    print(f"Total chunks across all splits: {len(all_chunks):,} in {time.time()-t0:.1f}s")
+                en_lines = [p[0] for p in paired_lines]
+                tw_lines = [p[1] for p in paired_lines]
+
+                spans = pack_lines_chars(en_lines, max_chars=args.max_chars)
+                for s, e in spans:
+                    en_c = " ".join(en_lines[s:e]).strip()
+                    tw_c = " ".join(tw_lines[s:e]).strip()
+                    if not en_c or not tw_c:
+                        continue
+
+                    ph = extract_full_noun_phrases(en_c, nlp)
+                    k = chunk_key(en_c, tw_c)
+                    chunk_obj = {
+                        "en": en_c,
+                        "tw": tw_c,
+                        "phrases": ph,
+                        "key": k,
+                    }
+                    chunks.append(chunk_obj)
+                    all_chunks.append(chunk_obj)
+
+            splits_chunks[split] = chunks
+            print(f"Split {split}: {len(rows)-skipped:,} docs -> {len(chunks):,} chunks (skipped {skipped} mismatched)", flush=True)
+
+        print(f"Total chunks across all splits: {len(all_chunks):,} in {time.time()-t0:.1f}s", flush=True)
+        os.makedirs(os.path.dirname(chunks_cache_file) or ".", exist_ok=True)
+        with open(chunks_cache_file, "w", encoding="utf-8") as f:
+            json.dump({"splits": splits_chunks, "all": all_chunks}, f, ensure_ascii=False)
+        print(f"Saved chunk cache to {chunks_cache_file}", flush=True)
 
     # Align with Gemini
     cache = align_all_chunks(
