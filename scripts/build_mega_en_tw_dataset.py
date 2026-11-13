@@ -1,13 +1,17 @@
-"""Build the largest high-quality English -> Twi training dataset with brackets on both sides.
+"""Build the largest high-quality English -> Twi training dataset for GLOSS-MT-2.
 
-Combines:
-  1. High-quality document chunks from `ghanaopenai/gloss-mt-parallel-en-twi` (29,982 chunks)
-  2. Quality-filtered sentences from `afrigloss-mt/data/gloss_dataset_en_tw_full` (510,000+ pairs)
+Format:
+  - input:  English sentence with the ENGLISH noun phrases enclosed in angle brackets:
+            "## The <history> about what is happening with our <money> is something we need to read carefully."
+  - target: Asante Twi translation that uses the ENGLISH noun phrases in angle brackets:
+            "## <History> a ɛfa nea ɛrekɔ so wɔ yɛn <money> ho no yɛ nea ɛhia sɛ yɛkenkan no yiye."
+  - english: Clean unbracketed English sentence.
+  - twi:     Clean human Asante Twi reference.
 
 Strict Quality Criteria:
   - Both English and Twi sentences are 6 to 100 words in length.
   - No captions, study notes, or boilerplate headers.
-  - Bracketed terms are identical on both sides: set(terms_in_en) == set(terms_in_tw).
+  - Bracketed terms are identical on both sides: set(terms_in_input) == set(terms_in_target).
   - Deduplicated by normalized text.
 """
 
@@ -32,7 +36,19 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
-def load_chunk_dataset(dataset_name: str) -> List[Dict]:
+def load_chunk_dataset(dataset_name: str, align_cache_path: str) -> List[Dict]:
+    print(f"Loading alignment cache from {align_cache_path}...")
+    tw_to_al = {}
+    with open(align_cache_path, encoding="utf-8") as f:
+        for line in f:
+            it = json.loads(line)
+            res = it.get("result", {})
+            btw = res.get("bracketed_twi")
+            if btw and "mapping" in res:
+                clean_tw = re.sub(r"\s+", " ", btw.replace("<", "").replace(">", "")).strip()
+                tw_to_al[clean_tw] = res
+    print(f"Loaded and indexed {len(tw_to_al):,} cache entries.")
+
     print(f"Loading document chunks from {dataset_name}...")
     ds = load_dataset(dataset_name)
     pairs = []
@@ -42,21 +58,51 @@ def load_chunk_dataset(dataset_name: str) -> List[Dict]:
         if split not in ds:
             continue
         for r in ds[split]:
-            inp = r.get("english_pretranslated", "").strip()
-            tgt = r.get("twi_bracketed", "").strip()
             en = r.get("english", "").strip()
             tw = r.get("twi", "").strip()
-
-            if not inp or not tgt or not en or not tw:
+            if not en or not tw:
                 continue
 
-            b_inp = PATTERN.findall(inp)
-            b_tgt = PATTERN.findall(tgt)
-            if not b_inp or not b_tgt:
+            clean_tw = re.sub(r"\s+", " ", tw).strip()
+            al = tw_to_al.get(clean_tw)
+            if not al or not al.get("mapping"):
                 continue
 
-            # Verify identical bracketed terms on both sides
-            if set(t.lower().strip() for t in b_inp) != set(t.lower().strip() for t in b_tgt):
+            mapping = al["mapping"]
+            valid_pairs = sorted(
+                [(ep.strip(), ts.strip()) for ep, ts in mapping.items() if ts and isinstance(ts, str) and ts.strip()],
+                key=lambda x: len(x[0]),
+                reverse=True,
+            )
+            if not valid_pairs:
+                continue
+
+            # 1. Bracket English noun phrases in English text
+            alts_en = [r"\s+".join(map(re.escape, p.split())) for p, s in valid_pairs]
+            pat_en = re.compile(r"(?<!\w)(?:" + "|".join(alts_en) + r")(?!\w)", re.IGNORECASE)
+            en_input = pat_en.sub(lambda m: f"<{m.group(0)}>", en)
+
+            # 2. In Twi, replace each twi_span with <english_phrase>!
+            twi_to_en = {s.lower(): p for p, s in valid_pairs}
+            alts_tw = [r"\s+".join(map(re.escape, s.split())) for p, s in valid_pairs]
+            alts_tw.sort(key=len, reverse=True)
+            pat_tw = re.compile(r"(?<!\w)(?:" + "|".join(alts_tw) + r")(?!\w)", re.IGNORECASE)
+
+            def sub_tw(m):
+                matched = m.group(0)
+                en_p = twi_to_en.get(matched.lower(), matched)
+                if matched[:1].isupper() and not en_p[:1].isupper():
+                    en_p = en_p[:1].upper() + en_p[1:]
+                return f"<{en_p}>"
+
+            tw_target = pat_tw.sub(sub_tw, tw)
+
+            # Verify brackets
+            b_in = PATTERN.findall(en_input)
+            b_tgt = PATTERN.findall(tw_target)
+            if not b_in or not b_tgt:
+                continue
+            if set(t.lower().strip() for t in b_in) != set(t.lower().strip() for t in b_tgt):
                 continue
 
             key = (normalize(en), normalize(tw))
@@ -65,8 +111,8 @@ def load_chunk_dataset(dataset_name: str) -> List[Dict]:
             seen.add(key)
 
             pairs.append({
-                "input": inp,
-                "target": tgt,
+                "input": en_input,
+                "target": tw_target,
                 "english": en,
                 "twi": tw,
                 "source": "gloss-mt-doc-chunks",
@@ -74,6 +120,20 @@ def load_chunk_dataset(dataset_name: str) -> List[Dict]:
 
     print(f"Loaded {len(pairs):,} unique verified document chunks.")
     return pairs
+
+
+def recover_afrigloss_mapping(src_raw: str, inp: str) -> Dict[str, str]:
+    parts = PATTERN.split(inp)
+    if len(parts) <= 1:
+        return {}
+    regex_parts = [re.escape(parts[i]) for i in range(0, len(parts), 2)]
+    full_regex = r"^" + r"(.+?)".join(regex_parts) + r"$"
+    m = re.match(full_regex, src_raw, re.DOTALL)
+    if m:
+        twi_terms = [parts[i] for i in range(1, len(parts), 2)]
+        en_phrases = [m.group(j + 1).strip() for j in range(len(twi_terms))]
+        return dict(zip(en_phrases, twi_terms))
+    return {}
 
 
 def load_afrigloss_pairs(
@@ -117,14 +177,33 @@ def load_afrigloss_pairs(
                 if src_raw.lower() == tgt_ref.lower():
                     continue
 
-                # 4. Check brackets on both sides
-                b_inp = PATTERN.findall(inp)
-                b_tgt = PATTERN.findall(tgt)
-                if not b_inp or not b_tgt:
+                mapping = recover_afrigloss_mapping(src_raw, inp)
+                if not mapping:
                     continue
 
-                # 5. Check that all terms in input match target exactly
-                if set(t.lower().strip() for t in b_inp) != set(t.lower().strip() for t in b_tgt):
+                # 1. English input: bracket English noun phrases
+                alts_en = [r"\s+".join(map(re.escape, p.split())) for p in sorted(mapping.keys(), key=len, reverse=True)]
+                pat_en = re.compile(r"(?<!\w)(?:" + "|".join(alts_en) + r")(?!\w)", re.IGNORECASE)
+                en_input = pat_en.sub(lambda m: f"<{m.group(0)}>", src_raw)
+
+                # 2. Twi target: in tgt, replace each <twi_term> with <en_phrase>
+                twi_to_en = {v.lower(): k for k, v in mapping.items()}
+
+                def sub_tw(m):
+                    tw_t = m.group(1).strip()
+                    en_p = twi_to_en.get(tw_t.lower(), tw_t)
+                    if tw_t[:1].isupper() and not en_p[:1].isupper():
+                        en_p = en_p[:1].upper() + en_p[1:]
+                    return f"<{en_p}>"
+
+                tw_target = PATTERN.sub(sub_tw, tgt)
+
+                # Verify brackets on both sides
+                b_in = PATTERN.findall(en_input)
+                b_tgt = PATTERN.findall(tw_target)
+                if not b_in or not b_tgt:
+                    continue
+                if set(t.lower().strip() for t in b_in) != set(t.lower().strip() for t in b_tgt):
                     continue
 
                 key = (normalize(src_raw), normalize(tgt_ref))
@@ -133,8 +212,8 @@ def load_afrigloss_pairs(
                 seen_keys.add(key)
 
                 pairs.append({
-                    "input": inp,
-                    "target": tgt,
+                    "input": en_input,
+                    "target": tw_target,
                     "english": src_raw,
                     "twi": tgt_ref,
                     "source": "afrigloss-sentence-corpus",
@@ -157,6 +236,11 @@ def main():
         help="Hugging Face repo id for document chunks",
     )
     ap.add_argument(
+        "--align-cache",
+        default="/mnt/volume_d2wey28/projects/twi-translation-tool-calling/repo/build/gold_alignment_cache.jsonl",
+        help="Path to gold_alignment_cache.jsonl",
+    )
+    ap.add_argument(
         "--afrigloss-dir",
         default="/mnt/volume_d2wey28/projects/afrigloss-mt/data/gloss_dataset_en_tw_full",
         help="Path to afrigloss full en_tw dataset directory",
@@ -177,8 +261,8 @@ def main():
 
     t0 = time.time()
 
-    # 1. Load document chunks
-    chunk_items = load_chunk_dataset(args.chunk_dataset)
+    # 1. Load document chunks with English nouns bracketed in English & used in Twi target
+    chunk_items = load_chunk_dataset(args.chunk_dataset, args.align_cache)
     seen_keys = {(normalize(it["english"]), normalize(it["twi"])) for it in chunk_items}
 
     # 2. Load and filter massive sentence pairs
@@ -188,7 +272,6 @@ def main():
     all_items = chunk_items + afrigloss_items
     print(f"\nTotal combined verified pairs: {len(all_items):,}")
 
-    # Shuffle with fixed seed for reproducibility
     random.seed(42)
     random.shuffle(all_items)
 
@@ -225,8 +308,8 @@ tags:
 - akan
 - asante-twi
 - machine-translation
-- gloss-mt
-- large-scale
+- gloss-mt-2
+- source-noun-preservation
 configs:
 - config_name: default
   data_files:
@@ -238,33 +321,25 @@ configs:
     path: data/test-*
 ---
 
-# GLOSS-MT Large-Scale English → Asante Twi (Akan) Parallel Dataset
+# GLOSS-MT-2 Large-Scale English → Asante Twi (Akan) Parallel Dataset
 
-Massive, high-quality parallel dataset for training **GLOSS-MT** models with exact in-place noun phrase bracketing on both sides.
-
-### Sources
-1. **Document Chunks (29,982 chunks):** Line-aligned document chunks from pristine government reports, finance budgets, legal texts (UDHR), health notices, and Akan narratives, with Gemini 3.8 Flash verified alignments.
-2. **AfriGloss Sentence Corpus (500,000+ pairs):** Sentence-level bilingual text strictly filtered for sentence length, grammar, and 100% matching bracketed terms on both sides.
+Massive, high-quality parallel dataset for training **GLOSS-MT-2** models.
 
 ### Paradigm
-- **Input (`input`):** English source with Twi translation in angle brackets `<twi_term>`.
-- **Target (`target`):** Gold Asante Twi target with matching `<twi_term>` in angle brackets.
-- **Reference Source (`english`):** Clean, unbracketed English sentence.
-- **Reference Target (`twi`):** Clean, unbracketed Asante Twi reference.
+- **Input (`input`):** English source with the **English noun phrases** enclosed in angle brackets:
+  `<Spain> produces <oil> than any other country in the <world>.`
+- **Target (`target`):** Fluent Asante Twi translation using the **English noun phrases** in angle brackets:
+  `<World> nyinaa no, <Spain> na wonya <oil> fi ngodua mu sen ɔman biara.`
+- **Clean Reference Source (`english`):** `Spain produces oil than any other country in the world.`
+- **Clean Reference Target (`twi`):** `Wiase nyinaa no, Spain na wonya ngo fi ngodua mu sen ɔman biara.`
 
 ### Split Statistics
 | Split | Samples | Source Composition |
 |---|---|---|
-| **train** | {len(splits['train']):,} | ~30k document chunks + ~500k sentence pairs |
-| **validation** | {len(splits['validation']):,} | High-quality held-out pairs |
-| **test** | {len(splits['test']):,} | Benchmark test set |
-| **Total** | **{len(all_items):,}** | |
-
-### Sample
-- **Input (English + `<Twi>`):** `10. Why might an elder be inclined to make rules for the <asafo>?`
-- **Target (Twi + `<Twi>`):** `10. Ɛdɛn na ebetumi ama <asafo> mu panyin anya adwene sɛ obetumi ahyehyɛ mmara ama anuanom wɔ asafo no mu?`
-- **Clean English:** `10. Why might an elder be inclined to make rules for the congregation?`
-- **Clean Twi:** `10. Ɛdɛn na ebetumi ama asafo mu panyin anya adwene sɛ obetumi ahyehyɛ mmara ama anuanom wɔ asafo no mu?`
+| **train** | {len(splits['train']):,} | Document chunks + sentence pairs |
+| **validation** | {len(splits['validation']):,} | Held-out evaluation pairs |
+| **test** | {len(splits['test']):,} | Held-out benchmark test set |
+| **Total** | **{len(all_items):,}** | 100% verified bracket matches |
 
 ### License
 CC BY-NC 4.0
