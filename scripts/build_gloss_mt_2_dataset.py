@@ -27,22 +27,25 @@ from huggingface_hub import HfApi
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-PROMPT_TEMPLATE = """Below is an English text, its Asante Twi (Akan) translation, and a list of English noun phrases from the text.
-Each English noun phrase includes its determiner/article (e.g., 'the', 'a', 'this', 'their', 'our', 'these', 'those').
-In Asante Twi, determiners like 'no' (the), 'yi' (this), or 'bi' (a) attach to the noun phrase.
+PROMPT_TEMPLATE = """Below is an English text, its Asante Twi translation, and a list of English noun phrases.
 
-Task:
-For each English noun phrase, identify its corresponding complete Twi translation (including its matching Twi determiner like 'no', 'yi', 'bi' where applicable).
-Then produce a target Twi text where the translated Twi spans are replaced by the exact English noun phrases in angle brackets <...>.
-
-Rules:
-- Never nest brackets.
-- Keep the rest of the Twi sentence completely unchanged.
-- If a phrase does not appear or is not translated in the Twi, leave it unbracketed.
+Grammar & Bracketing Rules:
+1. Definite articles and demonstratives ('the', 'this', 'that', 'these', 'those') stay WITH the noun inside the brackets:
+   Example: <the news reporters>, <this matter>, <the trade>, <these projects>.
+2. Indefinite articles ('a', 'an') MUST NOT be inside the brackets. Keep them outside:
+   Example: a <soldier>, a <small afternoon>, an <opportunity>.
+3. In the Twi target, replace the corresponding Twi translation with the English noun phrase using these bracketing rules:
+   - For definite/demonstrative phrases: replace the full Twi phrase (including 'no', 'yi') with <the ...> or <this ...>:
+     Example: 'amaneɛbɔ adwumayɛfoɔ no' -> <the news reporters>
+     Example: 'Asɛm yi' -> <this matter>
+   - For indefinite phrases: only the noun is in brackets, keeping any indefinite particle ('bi') or preposition outside:
+     Example: 'sɛ asrafoɔ' -> sɛ a <soldier> (or <soldier> bi)
+     Example: 'owia ketewa bi' -> a <small afternoon>
+4. Never nest brackets. Do not change the surrounding words.
 
 Return ONLY a JSON object with:
-- "mapping": mapping of English noun phrase -> matching Twi span (or null)
-- "target_twi": the Twi text where the translated spans are replaced by <English noun phrase>
+- "mapping": English noun phrase -> matching Twi span (or null)
+- "target_twi": Twi text with the English noun phrases bracketed according to the rules above.
 
 English:
 {en}
