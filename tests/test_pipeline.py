@@ -22,24 +22,27 @@ def test_substitute_glossary_en_to_tw():
     custom = {
         "hospital": "ayaresabea",
         "ministry of finance": "Sikasɛm Asoeɛ",
-        "yesterday": "ɛnora",
     }
     lookup = TwiLookup(custom_dict=custom)
 
-    # Translation produced by model where source nouns are preserved:
-    model_output = "Ministry of Finance no kɔsraa hospital no ɛnora."
-    source_nouns = ["Ministry of Finance", "hospital"]
+    # Model generates Twi with the untranslated English nouns marked in <...>:
+    model_output = "<Ministry of Finance> no kɔsraa <hospital> no wɔ <TechCrunch> ɛnora."
 
     final, applied = substitute_glossary(
         translation=model_output,
-        source_terms=source_nouns,
         lookup=lookup,
         direction="en-tw",
     )
 
+    # "Ministry of Finance" -> "Sikasɛm Asoeɛ"
     assert "Sikasɛm Asoeɛ" in final
+    # "hospital" -> "ayaresabea"
     assert "ayaresabea" in final
-    assert len(applied) == 2
+    # "TechCrunch" is a brand name not in dict -> shed brackets
+    assert "TechCrunch" in final
+    assert "<" not in final
+    assert ">" not in final
+    assert len(applied) == 3
 
 
 def test_substitute_glossary_tw_to_en():
@@ -49,17 +52,21 @@ def test_substitute_glossary_tw_to_en():
     }
     lookup = TwiLookup(custom_dict=custom)
 
-    # Translation produced by tw->en model where Twi nouns are preserved:
-    model_output = "The dɔkota visited the ayaresabea yesterday."
-    source_nouns = ["dɔkota", "ayaresabea"]
+    # Model generates English with the untranslated Twi nouns marked in <...>:
+    model_output = "The <dɔkota> visited the <ayaresabea> in <Kumasi> yesterday."
 
     final, applied = substitute_glossary(
         translation=model_output,
-        source_terms=source_nouns,
         lookup=lookup,
         direction="tw-en",
     )
 
+    # "dɔkota" -> "doctor"
     assert "doctor" in final
+    # "ayaresabea" -> "hospital"
     assert "hospital" in final
-    assert len(applied) == 2
+    # "Kumasi" stays without brackets
+    assert "Kumasi" in final
+    assert "<" not in final
+    assert ">" not in final
+    assert len(applied) == 3

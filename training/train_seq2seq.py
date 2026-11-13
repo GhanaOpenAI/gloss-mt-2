@@ -21,7 +21,6 @@ from transformers import (
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from gloss_mt_2.lookup import TwiLookup
-from gloss_mt_2.extractor import extract_noun_phrases
 from gloss_mt_2.inference import substitute_glossary
 from training.gen_eval import sample_examples, with_gen_metrics
 
@@ -96,9 +95,10 @@ def main():
         tok.tgt_lang = tgt_code
         forced_bos_token_id = tok.convert_tokens_to_ids(tgt_code)
 
-    # Ensure newline token exists and isn't dropped by normalizer
-    if "\n" not in tok.get_vocab():
-        tok.add_tokens(["\n"], special_tokens=False)
+    # Ensure angle brackets and newline are handled cleanly
+    for t in ["<", ">", "\n"]:
+        if t not in tok.get_vocab():
+            tok.add_tokens([t], special_tokens=False)
 
     print("Loading data splits...")
     raw_data = {s: load_data(args.data, s) for s in ("train", "validation")}
@@ -129,7 +129,6 @@ def main():
 
     # Shared lookup for validation evaluation
     shared_lookup = TwiLookup()
-    src_lang = "en" if args.direction == "en-tw" else "tw"
     val_sample_items = sample_examples(raw_data["validation"], args.gen_eval_samples)
 
     def gen_eval_fn(m, examples: List[Dict]) -> Tuple[List[str], List[str]]:
@@ -154,11 +153,9 @@ def main():
 
         # Substitute glossary
         sub_outs = []
-        for orig_e, raw in zip(examples, raw_outs):
-            source_nouns = extract_noun_phrases(orig_e["source"], lang=src_lang)
+        for raw in raw_outs:
             sub_text, _ = substitute_glossary(
                 translation=raw,
-                source_terms=source_nouns,
                 lookup=shared_lookup,
                 direction=args.direction,
             )

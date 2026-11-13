@@ -1,7 +1,11 @@
-"""Build parallel datasets for GLOSS-MT-2 where source noun phrases are preserved verbatim in the target."""
+"""Build parallel datasets for GLOSS-MT-2.
+
+The model receives clean, un-preprocessed source text (no brackets or markup).
+The model is trained to generate the translation with source noun phrases left
+untranslated and enclosed in angle brackets `<...>` for post-translation glossary substitution.
+"""
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -9,69 +13,39 @@ import sys
 import time
 from typing import Dict, List, Optional, Tuple
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from gloss_mt_2.lookup import TwiLookup, DEFAULT_PATH
+from datasets import Dataset, DatasetDict, load_dataset
 
 
-_SPLIT = re.compile(r"(\n\s*)")
-
-
-def split_lines(text: str) -> Tuple[List[str], List[str]]:
-    parts = _SPLIT.split(text)
-    lines = [parts[i] for i in range(0, len(parts), 2)]
-    seps = [parts[i] for i in range(1, len(parts), 2)] + [""]
-    return lines, seps
-
-
-def join_span(lines: List[str], seps: List[str], start: int, end: int) -> str:
-    return "".join(lines[i] + seps[i] for i in range(start, end))
-
-
-def pack_lines(lengths: List[int], max_tokens: int) -> List[Tuple[int, int]]:
-    spans, start, cur = [], 0, 0
-    for i, n in enumerate(lengths):
-        if cur + n > max_tokens and cur > 0:
-            spans.append((start, i))
-            start, cur = i, 0
-        cur += n
-    if cur > 0 or not spans:
-        spans.append((start, len(lengths)))
-    return spans
-
-
-def chunk_key(tw: str, phrases: List[str]) -> str:
-    return hashlib.sha1(json.dumps([tw, phrases], ensure_ascii=False).encode("utf-8")).hexdigest()
-
-
-def build_preserved_targets(
-    en_text: str,
-    tw_bracketed: str,
+def format_targets(
+    en: str,
+    tw: str,
     mapping: Dict[str, Optional[str]],
+    bracketed_twi: str,
 ) -> Tuple[str, str, List[Dict[str, str]]]:
     """
-    1. en_to_tw_target: Twi text where each <twi_span> is replaced by its English noun phrase.
-    2. tw_to_en_target: English text where each english_phrase is replaced by its Twi span.
+    1. en_to_tw_target: Twi text where each <twi_span> is replaced by its English noun phrase in <en_phrase>.
+    2. tw_to_en_target: English text where each english_phrase is replaced by <twi_span>.
     """
     twi_to_en = {}
     valid_pairs = []
-    for en_p, tw_s in mapping.items():
-        if tw_s and isinstance(tw_s, str) and tw_s.strip():
-            ep = en_p.strip()
-            ts = tw_s.strip()
-            twi_to_en[ts.lower()] = ep
-            valid_pairs.append((ep, ts))
+    for ep, ts in mapping.items():
+        if ts and isinstance(ts, str) and ts.strip():
+            ep_s = ep.strip()
+            ts_s = ts.strip()
+            twi_to_en[ts_s.lower()] = ep_s
+            valid_pairs.append((ep_s, ts_s))
 
-    # 1. en -> tw target (Twi with English noun phrases)
+    # 1. en -> tw: replace <twi_span> with <en_phrase>
     def sub_tw(m):
         span = m.group(1).strip()
-        en_phrase = twi_to_en.get(span.lower(), span)
-        if span[:1].isupper() and not en_phrase[:1].isupper():
-            en_phrase = en_phrase[:1].upper() + en_phrase[1:]
-        return en_phrase
+        en_p = twi_to_en.get(span.lower(), span)
+        if span[:1].isupper() and not en_p[:1].isupper():
+            en_p = en_p[:1].upper() + en_p[1:]
+        return f"<{en_p}>"
 
-    tw_preserved = re.sub(r"<([^<>\n]+)>", sub_tw, tw_bracketed)
+    tw_target = re.sub(r"<([^<>\n]+)>", sub_tw, bracketed_twi)
 
-    # 2. tw -> en target (English with Twi noun phrases)
+    # 2. tw -> en: replace english_phrase with <twi_span>
     valid_pairs.sort(key=lambda x: len(x[0]), reverse=True)
     table = {k.lower(): v for k, v in valid_pairs}
     if table:
@@ -81,104 +55,91 @@ def build_preserved_targets(
         def sub_en(m):
             matched = m.group(0)
             k = " ".join(matched.lower().split())
-            twi_val = table.get(k, matched)
-            if matched[:1].isupper() and not twi_val[:1].isupper():
-                twi_val = twi_val[:1].upper() + twi_val[1:]
-            return twi_val
+            tw_span = table.get(k, matched)
+            if matched[:1].isupper() and not tw_span[:1].isupper():
+                tw_span = tw_span[:1].upper() + tw_span[1:]
+            return f"<{tw_span}>"
 
-        en_preserved = pat.sub(sub_en, en_text)
+        en_target = pat.sub(sub_en, en)
     else:
-        en_preserved = en_text
+        en_target = en
 
-    used_terms = [{"english": p, "twi": s} for p, s in valid_pairs]
-    return tw_preserved, en_preserved, used_terms
+    terms = [{"english": p, "twi": s} for p, s in valid_pairs]
+    return tw_target, en_target, terms
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--data", default="data", help="Directory containing train.jsonl, validation.jsonl, test.jsonl")
+    ap.add_argument(
+        "--source-dataset",
+        default="ghanaopenai/gloss-mt-parallel-en-twi",
+        help="HF source dataset with clean english and twi text",
+    )
     ap.add_argument("--align-cache", required=True, help="Path to gold_alignment_cache.jsonl")
-    ap.add_argument("--out-dir", default="build/preserved-dataset", help="Output directory for generated datasets")
-    ap.add_argument("--chunk-tokens", type=int, default=192)
-    ap.add_argument("--push", default=None, help="Hugging Face repo id to push to (optional)")
+    ap.add_argument("--out-dir", default="build/preserved-dataset", help="Output directory")
+    ap.add_argument("--push", default=None, help="Hugging Face repo prefix to push to (optional)")
     args = ap.parse_args()
-
-    from datasets import Dataset, DatasetDict
-    from transformers import AutoTokenizer
-    from gloss_mt_2.extractor import extract_noun_phrases
 
     print(f"Loading alignment cache from {args.align_cache}...")
     t0 = time.time()
-    cache = {}
+    tw_to_al = {}
     with open(args.align_cache, encoding="utf-8") as f:
         for line in f:
             it = json.loads(line)
-            cache[it["key"]] = it.get("result", it.get("mapping"))
-    print(f"Loaded {len(cache):,} alignments in {time.time()-t0:.2f}s")
+            res = it.get("result", {})
+            btw = res.get("bracketed_twi")
+            if btw and "mapping" in res:
+                clean_tw = re.sub(r"\s+", " ", btw.replace("<", "").replace(">", "")).strip()
+                tw_to_al[clean_tw] = res
+    print(f"Loaded and indexed {len(tw_to_al):,} cache entries in {time.time()-t0:.2f}s")
 
-    tok = AutoTokenizer.from_pretrained("google/umt5-xl")
+    print(f"Loading source dataset from {args.source_dataset}...")
+    t1 = time.time()
+    ds = load_dataset(args.source_dataset)
+    print(f"Loaded dataset in {time.time()-t1:.2f}s")
 
     splits_en2tw = {}
     splits_tw2en = {}
 
-    for split in ("train", "validation", "test"):
-        split_path = os.path.join(args.data, f"{split}.jsonl")
-        if not os.path.exists(split_path):
-            print(f"Skipping {split} (file not found: {split_path})")
-            continue
-
-        with open(split_path, encoding="utf-8") as f:
-            rows = [json.loads(line) for line in f if line.strip()]
-
+    for split in ds.keys():
+        print(f"Processing {split} split ({len(ds[split]):,} rows)...")
         en2tw_rows = []
         tw2en_rows = []
-        skipped = 0
+        matched_count = 0
 
-        for r in rows:
-            en_lines, en_seps = split_lines(r["english"])
-            tw_lines, tw_seps = split_lines(r["translation"])
-            if len(en_lines) != len(tw_lines):
-                skipped += 1
-                continue
+        for i, r in enumerate(ds[split]):
+            en = r["english"]
+            tw = r["twi"]
+            clean_tw = re.sub(r"\s+", " ", tw).strip()
+            al = tw_to_al.get(clean_tw)
 
-            lengths = [len(tok(l, add_special_tokens=False).input_ids) for l in en_lines]
-            spans = pack_lines(lengths, args.chunk_tokens)
+            if al and al.get("bracketed_twi") and al.get("mapping"):
+                tw_target, en_target, terms = format_targets(en, tw, al["mapping"], al["bracketed_twi"])
+                matched_count += 1
+            else:
+                tw_target = tw
+                en_target = en
+                terms = []
 
-            for i, (s, e) in enumerate(spans):
-                en = join_span(en_lines, en_seps, s, e)
-                tw = join_span(tw_lines, tw_seps, s, e)
-                phrases = extract_noun_phrases(en, lang="en")
-                key = chunk_key(tw, phrases)
-                al = cache.get(key)
+            row_id = f"{split}_{i}"
 
-                if al and isinstance(al, dict) and al.get("bracketed_twi") and al.get("mapping"):
-                    tw_pres, en_pres, terms = build_preserved_targets(en, al["bracketed_twi"], al["mapping"])
-                else:
-                    tw_pres = tw
-                    en_pres = en
-                    terms = []
+            en2tw_rows.append({
+                "id": row_id,
+                "source": en,
+                "target": tw_target,
+                "gold": tw,
+                "terms": terms,
+            })
 
-                doc_id = r.get("id", f"{split}_{len(en2tw_rows)}")
+            tw2en_rows.append({
+                "id": row_id,
+                "source": tw,
+                "target": en_target,
+                "gold": en,
+                "terms": terms,
+            })
 
-                en2tw_rows.append({
-                    "id": doc_id,
-                    "chunk_index": i,
-                    "source": en,
-                    "target": tw_pres,
-                    "gold": tw,
-                    "terms": terms,
-                })
-
-                tw2en_rows.append({
-                    "id": doc_id,
-                    "chunk_index": i,
-                    "source": tw,
-                    "target": en_pres,
-                    "gold": en,
-                    "terms": terms,
-                })
-
-        print(f"{split}: {len(rows) - skipped:,} docs -> {len(en2tw_rows):,} chunks (skipped {skipped})")
+        print(f"  {split}: {matched_count:,} of {len(ds[split]):,} rows ({matched_count/len(ds[split]):.1%}) aligned with preserved nouns")
         splits_en2tw[split] = Dataset.from_list(en2tw_rows)
         splits_tw2en[split] = Dataset.from_list(tw2en_rows)
 
@@ -200,7 +161,7 @@ def main():
         print(f"Pushing to Hugging Face {args.push}-tw-en...")
         ds_tw2en.push_to_hub(f"{args.push}-tw-en")
 
-    print("Dataset generation complete!")
+    print("All datasets generated successfully!")
 
 
 if __name__ == "__main__":

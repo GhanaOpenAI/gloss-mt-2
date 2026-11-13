@@ -10,9 +10,8 @@ cd "$PROJ/repo"
 echo "[$(date '+%F %T')] Building GLOSS-MT-2 bidirectional preserved datasets..."
 
 $VENV/bin/python scripts/build_preserved_dataset.py \
-    --data "$SRC_REPO/data" \
+    --source-dataset "ghanaopenai/gloss-mt-parallel-en-twi" \
     --align-cache "$SRC_REPO/build/gold_alignment_cache.jsonl" \
-    --out-dir "$PROJ/data" \
-    --chunk-tokens 192
+    --out-dir "$PROJ/data"
 
 echo "[$(date '+%F %T')] Datasets built and saved in $PROJ/data!"

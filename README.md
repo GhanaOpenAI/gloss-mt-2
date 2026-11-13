@@ -51,7 +51,7 @@ translator = GlossMT2Translator(model=model, direction="en-tw")
 # 1. Standard translation with default offline dictionary
 res = translator.translate("The Ministry of Finance announced a new policy for the hospital.")
 print("Raw Model Output (Preserved):", res["raw_translation"])
-# -> "Ministry of Finance no de new policy foforɔ maa hospital no."
+# -> "<Ministry of Finance> no de <new policy> foforɔ maa <hospital> no."
 print("Final Translation (Substituted):", res["translation"])
 # -> "Sikasɛm Asoeɛ no de nhyehyɛeɛ foforɔ maa ayaresabea no."
 
