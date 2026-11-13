@@ -4,7 +4,7 @@ set -e
 PROJ="/mnt/volume_d2wey28/projects/gloss-mt-2"
 MODEL="facebook/nllb-200-distilled-600M"
 DIRECTION="en-tw"
-DATA="$PROJ/data/en_tw_large"
+DATA="$PROJ/data/en_tw_quality"
 OUT="$PROJ/checkpoints/nllb-600m-en2tw"
 VENV="$PROJ/.venv"
 LOG_DIR="$PROJ/logs"
