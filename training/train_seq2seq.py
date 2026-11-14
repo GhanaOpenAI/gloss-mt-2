@@ -20,8 +20,8 @@ from transformers import (
 )
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from gloss_mt_2.lookup import TwiLookup
-from gloss_mt_2.inference import substitute_glossary
+from nkrane_mt.lookup import TwiLookup
+from nkrane_mt.inference import substitute_glossary
 from training.gen_eval import sample_examples, with_gen_metrics
 
 

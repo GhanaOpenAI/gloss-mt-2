@@ -1,8 +1,8 @@
 """Unit tests for Cross-Encoder Reranker data and scoring logic."""
 
 import pytest
-from gloss_mt_2.inference import GlossMT2Translator, normalize_glossary_input, substitute_glossary
-from gloss_mt_2.lookup import TwiLookup
+from nkrane_mt.inference import GlossMT2Translator, normalize_glossary_input, substitute_glossary
+from nkrane_mt.lookup import TwiLookup
 
 
 class MockReranker:

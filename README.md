@@ -1,31 +1,46 @@
-# GLOSS-MT-2: Source-Noun Preservation & Post-Translation Glossary Substitution
+# Nkrane-MT: Entity-Grounded Machine Translation & Post-Translation Glossary Substitution
 
-**GLOSS-MT-2** is a second-generation machine translation paradigm for low-resource languages, starting with English and Asante Twi (Akan).
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![GitHub](https://img.shields.io/badge/GitHub-GhanaOpenAI%2Fnkrane--mt-black.svg)](https://github.com/GhanaOpenAI/nkrane-mt)
+[![Dataset](https://img.shields.io/badge/Dataset-nkrane--mt--parallel--corpus--eng--twi-yellow.svg)](https://huggingface.co/datasets/ghanaopenai/nkrane-mt-parallel-corpus-eng-twi)
+[![Reranker](https://img.shields.io/badge/Reranker-afro--xlmr--reranker-green.svg)](https://huggingface.co/ghanaopenai/gloss-mt-2-reranker-afro-xlmr)
 
-Rather than requiring pre-translated dictionaries prior to training and pre-translating source inputs in-place, GLOSS-MT-2 models are trained to **translate fluent context while leaving key noun phrases exactly as they appear in the source text**.
+**Nkrane-MT** (*Nkrane*, in Akan, signifies a message dispatch, communication, and report) is a next-generation machine translation paradigm for African languages, starting with English $\leftrightarrow$ Asante Twi (Akan).
 
-At inference time, a post-translation dictionary substitution step detects the preserved source nouns and substitutes them with their exact domain translations—allowing dictionaries and custom glossaries to be updated, swapped, or customized per-domain without fine-tuning or modifying model weights.
-
----
-
-## 💡 Why GLOSS-MT-2?
-
-| Dimension | GLOSS-MT (v1) | GLOSS-MT-2 (This Work) |
-|---|---|---|
-| **Input Text** | Pre-translated mixed text (`<twi_term>` injected into English) | **Clean, untouched source text** |
-| **Dictionary Requirement** | Requires pre-translated dictionary before translation starts | **Post-training substitution**: dictionary can be supplied or swapped after generation |
-| **Custom Glossaries** | Hard to adapt to new domains without retraining | **Zero retraining**: user supplies any custom dictionary at runtime |
-| **Out-of-Vocabulary Entities** | Fragile if terms are missing from the offline lexicon | **Naturally preserved**: unfamiliar entities remain intact in translation |
-| **Directionality** | English → Twi only | **Bidirectional**: English ↔ Twi |
+Rather than forcing artificial dictionary injection into English before translation, Nkrane-MT models translate fluent natural context with **dual-sided entity grounding**:
+- Targeted concrete noun phrases, compound titles, organizations, and demographic groups are marked with angle brackets `<...>` on the **English input**.
+- The seq2seq translation model directly preserves these exact bracketed terms on the **Asante Twi target**, keeping all Twi determiners outside the brackets.
+- Abstract nouns (*information, development, peace, justice*) are translated freely and naturally into Twi.
+- At inference time, an offline dictionary and our fine-tuned Afro-XLMR cross-encoder reranker evaluate candidate translations in context ($<5\text{ ms}$) and perform seamless post-translation lexical disambiguation.
 
 ---
 
-## 🧠 Target Models
+## 🏛️ Architecture Overview
 
-1. **GLOSS-MT OPUS-MT en-tw** (`Helsinki-NLP/opus-mt-en-tw`):
-   - Fine-tuned on **`en → tw`** (75M Marian architecture, ultra-fast & lightweight).
-2. **GLOSS-MT NLLB-200 600M** (`facebook/nllb-200-distilled-600M`):
-   - Fine-tuned on **`en → tw`** (600M distilled multi-lingual architecture).
+```
+                          [Raw English Source]
+          "The president of Ghana visited the Ministry of Finance."
+                                    │
+                                    ▼
+                          [NounPhraseMarker]
+       "The <president of Ghana> visited the <Ministry of Finance>."
+                                    │
+                                    ▼
+                        [Nkrane-MT Seq2Seq Model]
+       "<president of Ghana> no kɔsra <Ministry of Finance> no."
+                                    │
+     Candidates:
+       • 'president of Ghana' -> ["Ghana manpanin", "Ghana hene"]
+       • 'Ministry of Finance' -> ["Sikasɛm Asoeɛ"]
+                                    │
+                                    ▼
+                  [Afro-XLMR Cross-Encoder Reranker]
+                    Scores candidates in Twi context (<5 ms)
+                                    │
+                                    ▼
+                         [Final Fluent Twi]
+          "Ghana manpanin no kɔsra Sikasɛm Asoeɛ no."
+```
 
 ---
 
@@ -33,60 +48,69 @@ At inference time, a post-translation dictionary substitution step detects the p
 
 ### Installation
 ```bash
-git clone https://github.com/GhanaOpenAI/gloss-mt-2.git
-cd gloss-mt-2
+git clone https://github.com/GhanaOpenAI/nkrane-mt.git
+cd nkrane-mt
 pip install -e .
 ```
 
 ### Python Inference with Post-Translation Glossary Substitution
 
 ```python
-from gloss_mt_2 import GlossMT2Translator
-from gloss_mt_2.seq2seq import Seq2SeqModelWrapper
+from nkrane_mt import GlossMT2Translator
+from nkrane_mt.seq2seq import Seq2SeqModelWrapper
+from nkrane_mt.reranker import ContextualReranker
 
-# Load fine-tuned GLOSS-MT-2 model
+# 1. Load fine-tuned Nkrane-MT translation model
 model = Seq2SeqModelWrapper("ghanaopenai/gloss-mt-2-nllb-600m-en2tw", direction="en-tw")
-translator = GlossMT2Translator(model=model, direction="en-tw")
 
-# 1. Standard translation with default offline dictionary
-res = translator.translate("The Ministry of Finance announced a new policy for the hospital.")
-print("Raw Model Output (Preserved):", res["raw_translation"])
-# -> "<Ministry of Finance> no de <new policy> foforɔ maa <hospital> no."
-print("Final Translation (Substituted):", res["translation"])
-# -> "Sikasɛm Asoeɛ no de nhyehyɛeɛ foforɔ maa ayaresabea no."
+# 2. Load Afro-XLMR Cross-Encoder Reranker (optional for multi-candidate scoring)
+reranker = ContextualReranker("ghanaopenai/gloss-mt-2-reranker-afro-xlmr")
 
-# 2. Translation with custom domain glossary override
-custom_terms = {
-    "hospital": "akwahosan bea",
-    "policy": "mmara nhyehyɛe",
-}
-res_custom = translator.translate(
-    "The Ministry of Finance announced a new policy for the hospital.",
-    custom_glossary=custom_terms,
+# 3. Initialize translator (no dictionary loaded by default for zero memory overhead)
+translator = GlossMT2Translator(model=model, reranker=reranker, direction="en-tw")
+
+# 4. Translate with custom domain glossary override:
+custom_glossary = [
+    ("regional hospital", ["mantam ayaresabea", "akwahosan bea"]),
+    ("Ministry of Finance", "Sikasɛm Asoeɛ"),
+]
+
+res = translator.translate(
+    "The president of Ghana visited the regional hospital.",
+    custom_glossary=custom_glossary,
 )
-print("Custom Translation:", res_custom["translation"])
-# -> "Sikasɛm Asoeɛ no de mmara nhyehyɛe foforɔ maa akwahosan bea no."
+
+print("Marked English Input:", res["marked_input"])
+# -> "The <president of Ghana> visited the <regional hospital>."
+
+print("Raw Model Output:    ", res["raw_translation"])
+# -> "<president of Ghana> no kɔsra <regional hospital> no."
+
+print("Final Translation:   ", res["translation"])
+# -> "Ghana manpanin no kɔsra mantam ayaresabea no."
 ```
+
+---
+
+## 📊 Dataset & Benchmarks
+
+- **Grand Parallel Corpus:** [`ghanaopenai/nkrane-mt-parallel-corpus-eng-twi`](https://huggingface.co/datasets/ghanaopenai/nkrane-mt-parallel-corpus-eng-twi) (~774,000 sentence pairs across GHOK, Pristine, News, and JW).
+- **Afro-XLMR Reranker:** [`ghanaopenai/gloss-mt-2-reranker-afro-xlmr`](https://huggingface.co/ghanaopenai/gloss-mt-2-reranker-afro-xlmr) (**97.21% validation accuracy** on contextual lexical disambiguation).
 
 ---
 
 ## 🛠️ Data Preparation & Training on H200
 
-### 1. Build Preserved Dataset (Already built and cached on H200)
 ```bash
-./run_build_dataset.sh
-```
+# 1. Build Nkrane-MT Grand Dataset (with 10-pair batch streaming)
+./run_build_grand_dataset.sh
 
-### 2. Run Training
-```bash
-# Train OPUS-MT (en -> tw)
-./run_train_opus_mt_en2tw.sh
+# 2. Train Afro-XLMR Cross-Encoder Reranker
+./run_train_reranker.sh
 
-# Train NLLB-200 600M (en -> tw)
-./run_train_nllb_600m_en2tw.sh
-
-# Or run both in queue:
-./run_all_training.sh
+# 3. Fine-Tune Translation Models
+./run_train_opus_mt_en2tw.sh      # Helsinki-NLP Marian OPUS-MT
+./run_train_nllb_600m_en2tw.sh     # Meta NLLB-200 600M
 ```
 
 ---

@@ -1,8 +1,8 @@
-"""Tests for GLOSS-MT-2 bidirectional lookup and post-translation glossary substitution."""
+"""Tests for Nkrane-MT bidirectional lookup and post-translation glossary substitution."""
 
 import pytest
-from gloss_mt_2.lookup import TwiLookup
-from gloss_mt_2.inference import substitute_glossary
+from nkrane_mt.lookup import TwiLookup
+from nkrane_mt.inference import substitute_glossary
 
 
 def test_custom_dictionary():

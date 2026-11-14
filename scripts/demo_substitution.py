@@ -1,8 +1,8 @@
 import sys
 import os
 
-from gloss_mt_2.inference import substitute_glossary
-from gloss_mt_2.reranker import ContextualReranker
+from nkrane_mt.inference import substitute_glossary
+from nkrane_mt.reranker import ContextualReranker
 
 text = (
     "Efi <provided information> no mu Nea edidi so yi yɛ abakɔsɛm a ɛfa "

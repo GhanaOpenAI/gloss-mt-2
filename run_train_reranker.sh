@@ -17,7 +17,7 @@ if [ ! -d "$PROJ/data/reranker_dataset" ]; then
     echo "[$(date '+%F %T')] Building Cross-Encoder Reranker dataset..."
     $VENV/bin/python scripts/build_reranker_dataset.py \
         --source-dataset "ghanaopenai/gloss-mt-2-en-tw" \
-        --dict-path "gloss_mt_2/data/twi_dictionary.tsv.gz" \
+        --dict-path "nkrane_mt/data/twi_dictionary.tsv.gz" \
         --out-dir "$PROJ/data/reranker_dataset"
 fi
 
