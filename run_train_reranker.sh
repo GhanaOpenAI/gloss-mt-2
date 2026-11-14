@@ -26,12 +26,12 @@ $VENV/bin/python training/train_reranker.py \
     --model "$MODEL" \
     --data "$PROJ/data/reranker_dataset" \
     --out "$OUT" \
-    --epochs 5 \
+    --epochs 2 \
     --batch-size 32 \
     --grad-accum 2 \
-    --lr 2e-5 \
+    --lr 1e-5 \
     --eval-steps 500 \
-    --early-stopping-patience 3 \
+    --early-stopping-patience 10 \
     >> "$LOG_DIR/train_reranker.log" 2>&1
 
 echo "[$(date '+%F %T')] Afro-XLMR Reranker training complete! Best model saved to $OUT/final"
