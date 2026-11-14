@@ -15,6 +15,6 @@ $VENV/bin/python scripts/build_grand_dataset.py \
     --chunks-cache "$PROJ/build/grand_chunks_cache.json" \
     --push ghanaopenai/gloss-mt-2-en-tw-grand \
     --pristine-sample-size 450000 \
-    --workers-per-key 6
+    --workers-per-key 3
 
 echo "[$(date '+%F %T')] Grand dataset creation and Hugging Face publication complete!"

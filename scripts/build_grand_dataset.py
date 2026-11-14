@@ -11,8 +11,7 @@ Selective Targeting Rules:
 """
 
 import argparse
-import concurrent.futures
-from concurrent.futures import ThreadPoolExecutor
+import asyncio
 import hashlib
 import json
 import os
@@ -25,35 +24,13 @@ from typing import Dict, List, Optional, Tuple
 import requests
 import spacy
 from datasets import Dataset, DatasetDict, load_dataset
+from google import genai
+from google.genai import types
 from huggingface_hub import HfApi
 
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+MODEL_NAME = "gemini-3.8-live"
+VOICE_NAME = "Zephyr"
 _LEADING_ARTICLES = re.compile(r"^(?:the|a|an|this|that|these|those)\s+", re.IGNORECASE)
-
-PROMPT_TEMPLATE = """Below is an English text, its Asante Twi translation, and a selective list of English key phrases.
-The key phrases are either:
-1. Multi-word phrases (at least 2 words, where the second word can be a number, e.g. 'small afternoon', 'news reporters', 'Kejetia market place', 'May 2026', 'high court').
-2. Single-word proper nouns / named entities that are capitalized (e.g. 'Ghana', 'Telecel', 'Opoku', 'Jesus').
-Common single-word lowercase nouns are left unbracketed so the model translates them naturally into Twi!
-
-Task:
-For each key phrase in the list, identify its corresponding translation in the Twi text.
-Then produce a target Twi text where ONLY these specific key phrases are replaced by the English phrase in angle brackets <...>.
-All Twi determiners ('no', 'yi', 'bi', etc.) must stay in Twi outside the brackets!
-Never nest brackets. Leave all other words completely in natural Twi.
-
-Return ONLY a JSON object with:
-- "mapping": English phrase -> matching Twi span
-- "target_twi": Twi text where ONLY the listed phrases are in angle brackets <noun>.
-
-English:
-{en}
-
-Twi:
-{tw}
-
-Key phrases:
-{phrases}"""
 
 
 def load_api_keys() -> List[str]:
@@ -132,7 +109,6 @@ def extract_selective_noun_phrases(text: str, nlp) -> List[str]:
         if chunk.root.pos_ == "PRON":
             continue
         start, end = chunk.start, chunk.end
-        # If the token immediately following is a number (e.g. "May 2026", "Vision 2030"), extend span
         if end < len(doc) and (doc[end].like_num or doc[end].pos_ == "NUM"):
             end += 1
         raw_spans.append((start, end))
@@ -145,9 +121,6 @@ def extract_selective_noun_phrases(text: str, nlp) -> List[str]:
         if not words:
             continue
 
-        # Criteria:
-        # 1. Multi-word phrase (>= 2 words)
-        # 2. Single-word ONLY if capitalized (Named Entity / Proper Noun)
         is_valid = False
         if len(words) >= 2:
             is_valid = True
@@ -167,46 +140,202 @@ def chunk_key(en: str, tw: str) -> str:
     return hashlib.sha1(f"{en.strip()}|||{tw.strip()}".encode("utf-8")).hexdigest()
 
 
-def align_call(en: str, tw: str, phrases: List[str], key: str, model: str) -> Optional[Dict]:
-    prompt = PROMPT_TEMPLATE.format(en=en, tw=tw, phrases=json.dumps(phrases))
-    body = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "temperature": 0.0,
-            "thinkingConfig": {"thinkingBudget": 0},
-        },
-    }
-    for attempt in range(4):
+def extract_and_parse_json(raw_text: str):
+    text = raw_text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text).strip()
+    try:
+        return json.loads(text)
+    except Exception:
+        m = re.search(r"(\[.*\]|\{.*\})", text, re.DOTALL)
+        if m:
+            cand = m.group(1)
+            try:
+                return json.loads(cand)
+            except Exception:
+                fixed = re.sub(r",\s*([\}\]])", r"\1", cand)
+                return json.loads(fixed)
+        raise
+
+
+def build_live_config() -> types.LiveConnectConfig:
+    return types.LiveConnectConfig(
+        response_modalities=[types.Modality.AUDIO],
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE_NAME)
+            )
+        ),
+        output_audio_transcription=types.AudioTranscriptionConfig(),
+    )
+
+
+async def call_live_batch(client: genai.Client, batch: List[Dict], model: str = MODEL_NAME, max_retries: int = 2) -> Optional[List[Dict]]:
+    payload = [
+        {"id": c["key"], "en": c["en"], "tw": c["tw"], "phrases": c["phrases"]}
+        for c in batch
+    ]
+    prompt = (
+        "For each pair below, produce target Twi text where ONLY the listed key phrases are replaced by the English phrase in angle brackets <...>.\n"
+        "All Twi determiners ('no', 'yi', 'bi', etc.) must stay outside brackets in Twi.\n"
+        "Never nest brackets. Leave all other words completely in natural Twi.\n"
+        "Return ONLY a JSON array with objects containing 'id', 'mapping', and 'target_twi'.\n\n"
+        f"Input pairs:\n{json.dumps(payload, ensure_ascii=False)}"
+    )
+    config = build_live_config()
+    for attempt in range(1, max_retries + 1):
         try:
-            r = requests.post(GEMINI_URL.format(model=model), params={"key": key}, json=body, timeout=30)
-            if r.status_code == 200:
-                raw = json.loads(r.json()["candidates"][0]["content"]["parts"][0]["text"])
-                if isinstance(raw, dict) and "target_twi" in raw and "mapping" in raw:
-                    return raw
-            time.sleep(1 + attempt)
+            async with client.aio.live.connect(model=model, config=config) as session:
+                await session.send_client_content(
+                    turns=types.Content(role="user", parts=[types.Part(text=prompt)]),
+                    turn_complete=True,
+                )
+                chunks = []
+                async for message in session.receive():
+                    sc = message.server_content
+                    if sc and sc.output_transcription and sc.output_transcription.text:
+                        chunks.append(sc.output_transcription.text)
+                    if sc and sc.turn_complete:
+                        break
+                raw_text = "".join(chunks).strip()
+                data = extract_and_parse_json(raw_text)
+                if isinstance(data, list):
+                    return data
+                elif isinstance(data, dict):
+                    return [data]
         except Exception:
-            time.sleep(1 + attempt)
+            await asyncio.sleep(1.0 * attempt)
     return None
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--out-dir", default="data/en_tw_grand")
-    ap.add_argument("--cache-path", default="build/grand_alignment_cache.jsonl")
-    ap.add_argument("--chunks-cache", default="build/grand_chunks_cache.json")
-    ap.add_argument("--push", default="ghanaopenai/gloss-mt-2-en-tw-grand")
-    ap.add_argument("--pristine-sample-size", type=int, default=450_000, help="Balanced sample from pristine-twi-english matching GHOK")
-    ap.add_argument("--workers-per-key", type=int, default=6)
-    ap.add_argument("--model", default="gemini-3.8-flash")
-    args = ap.parse_args()
+async def call_live_single(client: genai.Client, c: Dict, model: str = MODEL_NAME) -> Optional[Dict]:
+    prompt = (
+        "Produce target Twi text where ONLY the listed key phrases are replaced by the English phrase in angle brackets <...>.\n"
+        "All Twi determiners ('no', 'yi', 'bi', etc.) must stay outside brackets in Twi.\n"
+        "Never nest brackets. Leave all other words completely in natural Twi.\n"
+        "Return ONLY a JSON object with 'mapping' and 'target_twi'.\n\n"
+        f"English:\n{c['en']}\n\nTwi:\n{c['tw']}\n\nKey phrases:\n{json.dumps(c['phrases'], ensure_ascii=False)}"
+    )
+    config = build_live_config()
+    try:
+        async with client.aio.live.connect(model=model, config=config) as session:
+            await session.send_client_content(
+                turns=types.Content(role="user", parts=[types.Part(text=prompt)]),
+                turn_complete=True,
+            )
+            chunks = []
+            async for message in session.receive():
+                sc = message.server_content
+                if sc and sc.output_transcription and sc.output_transcription.text:
+                    chunks.append(sc.output_transcription.text)
+                if sc and sc.turn_complete:
+                    break
+            raw_text = "".join(chunks).strip()
+            data = extract_and_parse_json(raw_text)
+            if isinstance(data, dict) and "target_twi" in data:
+                return data
+    except Exception:
+        pass
+    return None
 
+
+async def align_worker(
+    worker_id: str,
+    client: genai.Client,
+    queue: asyncio.Queue,
+    cache: Dict,
+    cache_file,
+    file_lock: asyncio.Lock,
+    stats: Dict,
+    model: str = MODEL_NAME,
+):
+    while True:
+        batch = await queue.get()
+        if batch is None:
+            queue.task_done()
+            break
+
+        results = await call_live_batch(client, batch, model=model)
+        by_id = {}
+        if results:
+            for item in results:
+                if isinstance(item, dict) and "id" in item and "target_twi" in item:
+                    by_id[str(item["id"])] = item
+
+        for item in batch:
+            k = item["key"]
+            res = by_id.get(k)
+            if not res or not res.get("target_twi"):
+                single_res = await call_live_single(client, item, model=model)
+                if single_res and single_res.get("target_twi"):
+                    res = single_res
+
+            if res and res.get("target_twi"):
+                async with file_lock:
+                    cache[k] = res
+                    cache_file.write(json.dumps({"key": k, "result": res}, ensure_ascii=False) + "\n")
+                    cache_file.flush()
+                    stats["done"] += 1
+                    if stats["done"] % 200 == 0:
+                        elapsed = time.time() - stats["start_time"]
+                        rate = stats["done"] / max(0.1, elapsed)
+                        rem = (stats["total_todo"] - stats["done"]) / max(0.1, rate)
+                        print(
+                            f"[{stats['done']:,}/{stats['total_todo']:,}] Speed: {rate:.1f} chunks/s | "
+                            f"ETA: {rem/3600:.1f}h remaining",
+                            flush=True,
+                        )
+            else:
+                stats["failed"] += 1
+
+        queue.task_done()
+
+
+async def periodic_hf_pusher(cache: Dict, all_chunks: List[Dict], repo_id: str, interval_mins: int = 20):
+    if not repo_id:
+        return
+    pattern = re.compile(r"<([^<>\n]+)>")
+    while True:
+        await asyncio.sleep(interval_mins * 60)
+        try:
+            valid_rows = []
+            for c in all_chunks:
+                res = cache.get(c["key"])
+                if not res or not res.get("target_twi"):
+                    continue
+                tgt = res["target_twi"].strip()
+                if pattern.search(tgt) and tgt.count("<") == tgt.count(">"):
+                    valid_rows.append({
+                        "input": c["en"],
+                        "target": tgt,
+                        "english": c["en"],
+                        "twi": c["tw"],
+                        "source": c.get("source", "grand"),
+                    })
+            if len(valid_rows) >= 5000:
+                print(f"[Periodic HF Pusher] Uploading snapshot of {len(valid_rows):,} rows to {repo_id}...", flush=True)
+                val_n = min(3000, max(500, int(len(valid_rows) * 0.05)))
+                test_n = val_n
+                train_n = len(valid_rows) - val_n - test_n
+                ds_dict = DatasetDict({
+                    "train": Dataset.from_list(valid_rows[:train_n]),
+                    "validation": Dataset.from_list(valid_rows[train_n : train_n + val_n]),
+                    "test": Dataset.from_list(valid_rows[train_n + val_n :]),
+                })
+                ds_dict.push_to_hub(repo_id)
+                print(f"[Periodic HF Pusher] Snapshot successfully pushed to {repo_id}!", flush=True)
+        except Exception as e:
+            print(f"[Periodic HF Pusher Error] {e}", flush=True)
+
+
+async def main_async(args):
     all_keys = load_api_keys()
     if not all_keys:
         sys.exit("Error: No Gemini API keys found in environment or key files.")
 
-    total_workers = min(128, len(all_keys) * args.workers_per_key)
-    print(f"Loaded {len(all_keys)} API keys ({total_workers} total parallel workers).", flush=True)
+    total_workers = min(64, len(all_keys) * args.workers_per_key)
+    print(f"Loaded {len(all_keys)} API keys ({total_workers} total parallel Live API workers).", flush=True)
 
     if os.path.exists(args.chunks_cache):
         print(f"Loading cached complete chunks from {args.chunks_cache}...", flush=True)
@@ -250,14 +379,12 @@ def main():
                         if ph:
                             all_chunks.append({"en": ec, "tw": tc, "phrases": ph, "key": k, "source": source_tag})
 
-        # Pillar 1: GHOK (~457k)
         print("Loading Pillar 1: GHOK Parallel Corpus...", flush=True)
         ds_ghok = load_dataset("ghananlpcommunity/ghok-parallel-en-twi", split="train")
         for r in ds_ghok:
             add_pair(r["english"], r["twi"], "ghok")
         print(f"  Pillar 1 accumulated: {len(all_chunks):,} chunks", flush=True)
 
-        # Pillar 2: Pristine Twi-English (Balanced across 4 styles)
         print("Loading Pillar 2: Pristine Twi-English (Balanced)...", flush=True)
         ds_pristine = load_dataset("ghanaopenai/pristine-twi-english", split="train")
         target_per_style = args.pristine_sample_size // 4
@@ -269,14 +396,12 @@ def main():
                 add_pair(r["english_translation"], r["twi"], f"pristine_{st.lower()}")
         print(f"  Pillar 1 + 2 accumulated: {len(all_chunks):,} chunks", flush=True)
 
-        # Pillar 3: News Paragraphs (~256k)
         print("Loading Pillar 3: Ghanaian News Paragraphs...", flush=True)
         ds_news = load_dataset("ghananlpcommunity/twi-english-paragraph-dataset_news", split="train")
         for r in ds_news:
             add_pair(r["ENGLISH"], r["TWI"], "news")
         print(f"  Pillar 1 + 2 + 3 accumulated: {len(all_chunks):,} chunks", flush=True)
 
-        # Pillar 4: JW Twi-English (~225k)
         print("Loading Pillar 4: JW African Corpus...", flush=True)
         try:
             sys.path.insert(0, "/mnt/volume_d2wey28/projects/afrigloss-mt")
@@ -295,7 +420,6 @@ def main():
         with open(args.chunks_cache, "w", encoding="utf-8") as f:
             json.dump(all_chunks, f, ensure_ascii=False)
 
-    # Multi-Key Alignment
     cache = {}
     if os.path.exists(args.cache_path):
         with open(args.cache_path, "r", encoding="utf-8") as f:
@@ -307,32 +431,55 @@ def main():
                     continue
 
     todo = [c for c in all_chunks if c["key"] not in cache and c["phrases"]]
-    print(f"Alignment: {len(all_chunks):,} chunks total, {len(cache):,} cached, {len(todo):,} to align with {args.model}", flush=True)
+    print(f"Alignment: {len(all_chunks):,} chunks total, {len(cache):,} cached, {len(todo):,} to align with {MODEL_NAME}", flush=True)
 
     if todo:
         os.makedirs(os.path.dirname(args.cache_path) or ".", exist_ok=True)
-        done, failed, t_start = 0, 0, time.time()
-        with open(args.cache_path, "a", encoding="utf-8") as cf, ThreadPoolExecutor(max_workers=total_workers) as ex:
-            futures = {
-                ex.submit(align_call, c["en"], c["tw"], c["phrases"], all_keys[i % len(all_keys)], args.model): c
-                for i, c in enumerate(todo)
-            }
-            for fut in concurrent.futures.as_completed(futures):
-                c = futures[fut]
-                res = fut.result()
-                if res is None:
-                    failed += 1
-                    continue
-                cache[c["key"]] = res
-                cf.write(json.dumps({"key": c["key"], "result": res}, ensure_ascii=False) + "\n")
-                cf.flush()
-                done += 1
-                if done % 1000 == 0:
-                    rate = done / (time.time() - t_start)
-                    rem = (len(todo) - done) / max(1, rate)
-                    print(f"  aligned {done:,}/{len(todo):,} ({rate:.1f}/s, ~{rem/3600:.1f}h remaining)", flush=True)
+        queue = asyncio.Queue(maxsize=5000)
+        file_lock = asyncio.Lock()
+        stats = {
+            "done": 0,
+            "failed": 0,
+            "start_time": time.time(),
+            "total_todo": len(todo),
+        }
 
-    # Format into final Dataset
+        asyncio.create_task(periodic_hf_pusher(cache, all_chunks, args.push, interval_mins=20))
+
+        cf = open(args.cache_path, "a", encoding="utf-8")
+
+        workers = []
+        batch_size = 3
+        for k_idx, key in enumerate(all_keys):
+            client = genai.Client(api_key=key)
+            for w_idx in range(args.workers_per_key):
+                wid = f"K{k_idx}-W{w_idx}"
+                workers.append(
+                    asyncio.create_task(
+                        align_worker(
+                            wid,
+                            client,
+                            queue,
+                            cache,
+                            cf,
+                            file_lock,
+                            stats,
+                            model=MODEL_NAME,
+                        )
+                    )
+                )
+
+        batches = [todo[i : i + batch_size] for i in range(0, len(todo), batch_size)]
+        for b in batches:
+            await queue.put(b)
+
+        await queue.join()
+
+        for _ in workers:
+            await queue.put(None)
+        await asyncio.gather(*workers)
+        cf.close()
+
     print("Formatting final dataset splits...", flush=True)
     pattern = re.compile(r"<([^<>\n]+)>")
     valid_rows = []
@@ -398,21 +545,11 @@ configs:
 
 # GLOSS-MT-2: Grand Multi-Pillar English → Asante Twi (Akan) Parallel Dataset
 
-Massive, balanced parallel dataset for **GLOSS-MT-2** with selective noun targeting (multi-word phrases & capitalized entities only):
+Massive, balanced parallel dataset for **GLOSS-MT-2** with selective noun targeting:
 1. **GHOK Parallel Corpus:** STEM, technical, academic, and governance text.
 2. **Pristine Twi-English:** Balanced across Monologue, Narrative, Dialogue, and Storyful styles.
 3. **Ghanaian News Paragraphs:** Real Ghanaian news and current affairs.
 4. **JW African Corpus:** Verse-aligned literature and dialogue.
-
-### Selective Targeting Paradigm
-- **Multi-word phrases ($\ge 2$ words):** `<small afternoon>`, `<news reporters>`, `<Kejetia market place>`, `<May 2026>`, `<UCC certificate>`, `<high court>`.
-- **Single-word entities ONLY if capitalized:** `<Ghana>`, `<Telecel>`, `<Opoku>`, `<Jesus>`.
-- **Common single-word lowercase nouns are NOT bracketed:** `man`, `day`, `soldier`, `matter`, `trade`, `nation` translate freely and naturally into Twi.
-- **Input (`input`):** Raw, natural English sentence with **NO brackets** and **NO markdown** (zero preprocessing).
-- **Target (`target`):** Fluent Asante Twi translation using ONLY targeted key phrases in angle brackets `<noun>` with all Twi determiners outside:
-  `Ɛduruu <small afternoon> bi, na <news reporters> no nsrane kɔɔ <Kejetia market place> hɔ. Wɔkɔhwɛɛ sɛnea dwadie no teɛ wɔ hɔ seisei. Asɛm yi yɛ duru. Aban no de too dwa sɛ ɔpɛ sɛ ɔsom <Ghana> sɛ asrafoɔ.`
-- **Clean Reference Target (`twi`):** `Ɛduruu owia ketewa bi, na amaneɛbɔ adwumayɛfoɔ no nsrane kɔɔ Kejetia dwadibea hɔ. Wɔkɔhwɛɛ sɛnea dwadie no teɛ wɔ hɔ seisei. Asɛm yi yɛ duru. Aban no de too dwa sɛ ɔpɛ sɛ ɔsom Ghana sɛ asrafoɔ.`
-- **Clean Reference Source (`english`):** `It reached a small afternoon, and the news reporters went to the Kejetia market place. They went to see how the trade is there now. This matter is heavy. The government announced that he wants to serve Ghana as a soldier.`
 
 ### Split Statistics
 | Split | Samples | Notes |
@@ -439,6 +576,19 @@ Massive, balanced parallel dataset for **GLOSS-MT-2** with selective noun target
             repo_type="dataset",
         )
         print(f"Published successfully to https://huggingface.co/datasets/{args.push}!", flush=True)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--out-dir", default="data/en_tw_grand")
+    ap.add_argument("--cache-path", default="build/grand_alignment_cache.jsonl")
+    ap.add_argument("--chunks-cache", default="build/grand_chunks_cache.json")
+    ap.add_argument("--push", default="ghanaopenai/gloss-mt-2-en-tw-grand")
+    ap.add_argument("--pristine-sample-size", type=int, default=450_000)
+    ap.add_argument("--workers-per-key", type=int, default=3)
+    args = ap.parse_args()
+
+    asyncio.run(main_async(args))
 
 
 if __name__ == "__main__":
