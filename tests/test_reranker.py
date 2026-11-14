@@ -92,3 +92,19 @@ def test_custom_list_formats():
     res3 = normalize_glossary_input(["trade\tdwadie\taguadi", "court\tasɛnnibea"])
     assert res3["trade"] == ["dwadie", "aguadi"]
     assert res3["court"] == "asɛnnibea"
+
+
+def test_multi_word_phrase_reranking():
+    """Verify that multi-word phrases with multiple words are matched and substituted properly."""
+    mock_model = MockSeq2SeqModel("Aban no bɛsi <regional hospital> foforɔ wɔ Kumasi.")
+    mock_reranker = MockReranker()
+    translator = GlossMT2Translator(model=mock_model, reranker=mock_reranker, use_default_dictionary=False)
+
+    custom_list = [
+        ("regional hospital", ["mantam ayaresabea", "akwahosan bea"]),
+        ("Ministry of Finance", "Sikasɛm Asoeɛ"),
+    ]
+    res = translator.translate("The government will build a regional hospital.", custom_glossary=custom_list)
+    assert "mantam ayaresabea" in res["translation"]
+    assert res["substitutions"][0]["source"] == "regional hospital"
+    assert "<" not in res["translation"]
