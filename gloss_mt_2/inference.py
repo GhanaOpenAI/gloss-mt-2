@@ -6,6 +6,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .lookup import TwiLookup, normalize_term
+from .marker import NounPhraseMarker
 from .reranker import ContextualReranker
 
 _BRACKETED = re.compile(r"<([^<>\n]{1,120})>")
@@ -164,6 +165,9 @@ class GlossMT2Translator:
     By default, the heavy offline dictionary is NOT loaded unless explicitly requested via
     `use_default_dictionary=True` or `lookup=TwiLookup()`. Custom glossaries can be passed
     as lists, dicts, or files.
+
+    At inference time, `NounPhraseMarker` automatically detects and brackets targeted noun
+    phrases on the input side before feeding to the seq2seq generator.
     """
 
     def __init__(
@@ -174,10 +178,12 @@ class GlossMT2Translator:
         reranker: Optional[ContextualReranker] = None,
         custom_glossary: Optional[Union[Dict, List]] = None,
         use_default_dictionary: bool = False,
+        marker: Optional[NounPhraseMarker] = None,
     ):
         self.model = model
         self.direction = direction.lower()
         self.reranker = reranker
+        self.marker = marker or NounPhraseMarker()
 
         if lookup is not None:
             self.lookup = lookup
@@ -192,18 +198,27 @@ class GlossMT2Translator:
         self,
         text: str,
         custom_glossary: Optional[Union[Dict, List]] = None,
+        auto_mark: bool = True,
     ) -> Dict:
         """
-        Translates raw input text (no preprocessing required) and applies smart contextual substitution.
+        Translates input text and applies smart contextual substitution.
+        Automatically marks targeted noun phrases on the input side with <...> if not already present.
         """
         if not text or not text.strip():
-            return {"translation": "", "raw_translation": "", "substitutions": []}
-
-        raw_translation = self.model.generate(text)
+            return {"translation": "", "raw_translation": "", "marked_input": "", "substitutions": []}
 
         merged_glossary = dict(self.custom_glossary)
         if custom_glossary:
             merged_glossary.update(normalize_glossary_input(custom_glossary))
+
+        # Mark noun phrases on input side if auto_mark is True and text is not already bracketed
+        if auto_mark and ("<" not in text or ">" not in text):
+            custom_keys = [k for k in merged_glossary.keys() if isinstance(k, str)]
+            marked_input, _ = self.marker.mark(text, custom_terms=custom_keys)
+        else:
+            marked_input = text
+
+        raw_translation = self.model.generate(marked_input)
 
         final_translation, substitutions = substitute_glossary(
             translation=raw_translation,
@@ -217,5 +232,6 @@ class GlossMT2Translator:
         return {
             "translation": final_translation,
             "raw_translation": raw_translation,
+            "marked_input": marked_input,
             "substitutions": substitutions,
         }

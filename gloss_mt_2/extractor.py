@@ -1,22 +1,28 @@
 """Selective Noun Phrase & Named Entity Extraction for GLOSS-MT-2.
 
-Rules:
-1. Leave out abstract nouns (e.g. 'information', 'development', 'history', 'investigation', 'peace', 'justice').
-   Models must translate abstract concepts freely and naturally into Twi.
-2. If a noun phrase is NOT abstract (concrete/physical: e.g. 'hospital', 'car', 'road', 'soldier', 'gold'),
-   include it even if it is 1 word!
-3. If a noun phrase is capitalized:
-   - If it appears anywhere except the sentence start: KEEP it irrespective of abstract or not
-     (e.g. 'Ghana', 'Telecel', 'Ministry of Finance', 'May 2026', 'Christianity').
-   - If it appears at the start of the sentence:
-     - If it contains MORE THAN ONE word (e.g. 'Ministry of Finance', 'Telecel Ghana'): KEEP it!
-     - If it is a SINGLE word (e.g. 'Information...', 'Development...', 'Hospital...'):
-       capitalization may just be grammatical sentence-initial casing, so apply the abstract rule:
-       keep ONLY if NOT abstract!
+Linguistic & Grammatical Rules:
+1. Full Grammatical Nominal Phrases:
+   Rather than shallow flat base-noun chunking (which artificially chops nominal complements,
+   e.g. splitting 'president of Ghana' into 'president' and 'Ghana'), extraction follows the full
+   syntactic dependency tree to capture complete complex nominal phrases:
+   - 'president of Ghana', 'Ministry of Finance', 'Bank of Ghana governor', 'King of Asante', 'Minister for Health'
+2. Abstract Nouns are EXCLUDED (translated freely into Twi):
+   Abstract nouns and conceptual terms ('information', 'development', 'history', 'investigation',
+   'peace', 'justice', 'freedom', 'policy', 'decision', 'beauty', 'knowledge') are NEVER bracketed.
+   Models translate them naturally into fluent Asante Twi.
+3. Concrete (Non-Abstract) Noun Phrases are INCLUDED (even if 1 word):
+   Physical entities, artifacts, locations, organisms, and institutions
+   ('hospital', 'regional hospital', 'car', 'road', 'soldier', 'gold', 'water', 'phone', 'court', 'market place').
+4. Capitalized Nouns & Proper Entities:
+   - Capitalized entities inside the sentence are preserved ('Ghana', 'Telecel', 'Ministry of Finance', 'May 2026').
+   - Sentence-Initial Capitalization Guard:
+     - Multi-word capitalized phrases starting the sentence are preserved ('Ministry of Finance...').
+     - Single-word nouns starting the sentence ('Information...', 'Hospital...') are subject to the
+       abstractness test: kept if concrete ('Hospital...'), excluded if abstract ('Information...').
 """
 
 import re
-from typing import List, Optional
+from typing import List, Optional, Set
 
 _nlp = None
 _wn = None
@@ -39,8 +45,11 @@ CONCRETE_EXCEPTIONS = {
     "building", "painting", "drawing", "clothing", "ring", "wing", "spring",
     "gold", "silver", "money", "court", "market", "office", "church", "school",
     "hospital", "bank", "prison", "station", "university", "college",
-    "police", "army", "family", "team", "equipment", "device", "vehicle"
+    "police", "army", "family", "team", "equipment", "device", "vehicle",
+    "governor", "president", "king", "minister", "chief", "director"
 }
+
+NOMINAL_DEPS = {"compound", "amod", "nmod", "nummod", "det", "poss", "case", "appos"}
 
 
 def get_wordnet():
@@ -81,12 +90,24 @@ def is_abstract_word(word: str) -> bool:
     return any(lower.endswith(sfx) for sfx in ABSTRACT_SUFFIXES)
 
 
+def is_relational_prep(prep_token) -> bool:
+    """Returns True if preposition is a syntactic complement of a nominal phrase."""
+    # 'of' is universally a nominal genitive/relational complement
+    if prep_token.text.lower() == "of":
+        return True
+    # 'for' or 'to' when connecting capitalized title entities (e.g. 'Minister for Health')
+    if prep_token.head.text[:1].isupper() and any(c.text[:1].isupper() for c in prep_token.children if c.dep_ in ("pobj", "pcomp")):
+        if prep_token.text.lower() in ("for", "to"):
+            return True
+    return False
+
+
 def get_nlp(model_name: str = "en_core_web_sm"):
     global _nlp
     if _nlp is None:
         import spacy
         try:
-            _nlp = spacy.load(model_name, disable=["ner", "lemmatizer"])
+            _nlp = spacy.load(model_name, disable=["ner"])
         except Exception:
             try:
                 _nlp = spacy.load("en_core_web_sm")
@@ -97,8 +118,8 @@ def get_nlp(model_name: str = "en_core_web_sm"):
 
 def extract_selective_noun_phrases(text: str, nlp=None) -> List[str]:
     """
-    Extracts non-abstract concrete noun phrases and legitimate capitalized entities.
-    Abstract nouns are excluded so models translate them freely and naturally.
+    Extracts full grammatical noun phrases (including prepositional complements like 'president of Ghana'),
+    filtering out abstract nouns while preserving concrete entities and proper nouns.
     """
     nlp = nlp or get_nlp()
     if nlp is None:
@@ -106,56 +127,82 @@ def extract_selective_noun_phrases(text: str, nlp=None) -> List[str]:
         return list(dict.fromkeys(words))
 
     doc = nlp(text)
-    phrases = []
+
+    # 1. Identify top-level nominal heads in dependency tree
+    heads = []
+    for token in doc:
+        if token.pos_ in ("NOUN", "PROPN"):
+            if token.dep_ in ("compound", "nmod"):
+                continue
+            # If it's a pobj of a relational preposition ('of Ghana'), its parent noun absorbs it
+            if token.dep_ in ("pobj", "pcomp") and is_relational_prep(token.head) and token.head.head.pos_ in ("NOUN", "PROPN"):
+                continue
+            heads.append(token)
+
+    selected = []
     seen = set()
 
-    for chunk in doc.noun_chunks:
-        if chunk.root.pos_ == "PRON":
+    # 2. Collect full nominal subtrees for each head
+    for head in heads:
+        nodes = {head}
+
+        def collect(node):
+            for child in node.children:
+                if child.dep_ in NOMINAL_DEPS:
+                    nodes.add(child)
+                    collect(child)
+                elif child.dep_ == "prep" and is_relational_prep(child):
+                    nodes.add(child)
+                    for pobj in child.children:
+                        if pobj.dep_ in ("pobj", "pcomp"):
+                            nodes.add(pobj)
+                            collect(pobj)
+
+        collect(head)
+        sorted_nodes = sorted(list(nodes), key=lambda t: t.i)
+        span_text = doc[sorted_nodes[0].i : sorted_nodes[-1].i + 1].text.strip()
+        span_clean = re.sub(r"^[\W_]+|[\W_]+$", "", span_text)
+        base = _LEADING_ARTICLES.sub("", span_clean).strip()
+        if not base or len(base) < 2:
             continue
 
-        # Split coordinate conjunctions (e.g. 'early development and hospital equipment')
-        raw_parts = re.split(r"\s+\b(?:and|or)\b\s+", chunk.text)
-        for part in raw_parts:
-            part_clean = re.sub(r"^[\W_]+|[\W_]+$", "", part.strip())
-            base = _LEADING_ARTICLES.sub("", part_clean).strip()
-            if not base or len(base) < 2:
-                continue
+        words = base.split()
 
-            words = base.split()
-            # The root/head word of the noun phrase is typically the last token
-            root_word = chunk.root.text if (len(words) > 1 and chunk.root.text in words) else words[-1]
-            is_abstract = is_abstract_word(root_word)
+        # Check sentence start
+        m = re.search(r"\b" + re.escape(base) + r"\b", text)
+        start_pos = m.start() if m else 0
+        prefix = text[:start_pos].strip(" \"'`([{<-")
+        is_sent_start = (len(prefix) == 0)
 
-            # Determine whether phrase begins at sentence start (ignoring leading quotes/brackets)
-            m = re.search(r"\b" + re.escape(base) + r"\b", text)
-            start_pos = m.start() if m else 0
-            prefix = text[:start_pos].strip(" \"'`([{<-")
-            is_sent_start = (len(prefix) == 0)
+        # Capitalization check
+        has_capitalized = any(w[:1].isupper() and any(c.isalpha() for c in w) for w in words)
 
-            is_capitalized = words[0][:1].isupper() and any(c.isalpha() for c in words[0])
+        # Root abstractness check
+        root_word = head.text
+        is_abstract = is_abstract_word(root_word)
 
-            # Apply user rules:
-            keep = False
-            if is_capitalized:
-                if is_sent_start:
-                    if len(words) > 1:
-                        # Multi-word capitalized phrase starting the sentence (e.g. 'Ministry of Finance')
-                        keep = True
-                    else:
-                        # Single word capitalized at sentence start (e.g. 'Information' vs 'Hospital')
-                        keep = not is_abstract
-                else:
-                    # Capitalized anywhere else in sentence: keep regardless of abstract or not
+        # Apply user selection rules:
+        keep = False
+        if has_capitalized:
+            if is_sent_start:
+                if len(words) > 1:
+                    # Multi-word capitalized phrase starting sentence (e.g. 'Ministry of Finance')
                     keep = True
+                else:
+                    # Single word capitalized at sentence start (e.g. 'Information' vs 'Hospital')
+                    keep = not is_abstract
             else:
-                # Lowercase: keep if not abstract
-                keep = not is_abstract
+                # Capitalized anywhere else in sentence: keep regardless of abstractness
+                keep = True
+        else:
+            # Lowercase: keep if not abstract
+            keep = not is_abstract
 
-            if keep and base.lower() not in seen:
-                seen.add(base.lower())
-                phrases.append(base)
+        if keep and base.lower() not in seen:
+            seen.add(base.lower())
+            selected.append(base)
 
-    return phrases
+    return selected
 
 
 def extract_noun_phrases(text: str, lang: str = "en", **kwargs) -> List[str]:
