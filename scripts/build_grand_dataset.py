@@ -256,6 +256,7 @@ async def periodic_hf_pusher(cache: Dict, all_chunks: List[Dict], repo_id: str, 
                     "target": tgt.strip(),
                     "english": c["en"],
                     "twi": c["tw"],
+                    "phrases": res.get("phrases", []),
                     "source": c.get("source", "grand"),
                 })
             if len(valid_rows) >= 5000:
@@ -438,6 +439,7 @@ async def main_async(args):
             "target": tgt.strip(),
             "english": c["en"],
             "twi": c["tw"],
+            "phrases": res.get("phrases", []),
             "source": c.get("source", "grand"),
         })
 
@@ -486,7 +488,7 @@ def main():
     ap.add_argument("--out-dir", default="data/en_tw_grand")
     ap.add_argument("--cache-path", default="build/grand_alignment_cache.jsonl")
     ap.add_argument("--chunks-cache", default="build/grand_chunks_cache.json")
-    ap.add_argument("--push", default="ghanaopenai/gloss-mt-2-en-tw-grand")
+    ap.add_argument("--push", default="ghanaopenai/nkrane-mt-parallel-corpus-eng-twi")
     ap.add_argument("--pristine-sample-size", type=int, default=450_000)
     ap.add_argument("--workers-per-key", type=int, default=3)
     args = ap.parse_args()
