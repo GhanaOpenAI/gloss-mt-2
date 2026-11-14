@@ -15,57 +15,57 @@ tags:
 - machine-translation
 - lexical-disambiguation
 - word-sense-disambiguation
-- gloss-mt-2
+- nkrane-mt
 - african-nlp
 pipeline_tag: text-classification
 metrics:
 - accuracy
 model-index:
-- name: gloss-mt-2-reranker-afro-xlmr
+- name: nkrane-mt-reranker-afro-xlmr
   results:
   - task:
       type: text-classification
       name: Cross-Encoder Contextual Lexical Disambiguation
     dataset:
-      name: gloss-mt-2-en-tw
-      type: ghanaopenai/gloss-mt-2-en-tw
+      name: nkrane-mt-parallel-corpus-eng-twi
+      type: ghanaopenai/nkrane-mt-parallel-corpus-eng-twi
     metrics:
     - type: accuracy
       value: 97.21
 ---
 
-# GLOSS-MT-2 Afro-XLMR Cross-Encoder Reranker
+# Nkrane-MT Afro-XLMR Cross-Encoder Reranker
 
-**`ghanaopenai/gloss-mt-2-reranker-afro-xlmr`** is a specialized cross-encoder reranker fine-tuned from [`Davlan/afro-xlmr-base`](https://huggingface.co/Davlan/afro-xlmr-base) for **contextual lexical disambiguation** in English $\rightarrow$ Asante Twi (Akan) translation.
+**`ghanaopenai/nkrane-mt-reranker-afro-xlmr`** is a specialized cross-encoder reranker fine-tuned from [`Davlan/afro-xlmr-base`](https://huggingface.co/Davlan/afro-xlmr-base) for **contextual lexical disambiguation** in English $\rightarrow$ Asante Twi (Akan) translation.
 
-It is a core component of the **GLOSS-MT-2** translation paradigm developed by [GhanaOpenAI](https://github.com/GhanaOpenAI/gloss-mt-2).
+It is a core component of the **Nkrane-MT** translation pipeline developed by [GhanaOpenAI](https://github.com/GhanaOpenAI/nkrane-mt).
 
 ---
 
-## 💡 Role in the GLOSS-MT-2 Pipeline
+## 💡 Role in the Nkrane-MT Pipeline
 
-In GLOSS-MT-2, generative seq2seq models (e.g. Marian `opus-mt-en-tw` or `nllb-200-distilled-600M`) are trained to output fluent Asante Twi while keeping targeted English noun phrases preserved in angle brackets `<noun>` (with all Twi determiners such as `no`, `yi`, `bi` outside the brackets).
+In Nkrane-MT, generative seq2seq models (e.g. Marian `opus-mt-en-tw` or `nllb-200-distilled-600M`) are trained to output fluent Asante Twi while keeping targeted English noun phrases preserved in angle brackets `<noun>` (with all Twi determiners such as `no`, `yi`, `bi` outside the brackets).
 
 After the model generates the sentence, an offline dictionary lookup provides candidate Asante Twi translations for each bracketed term. Because many words have multiple distinct senses (e.g., *"trade"* can mean *"dwadie"* [commerce] or *"adwuma"* [profession]), this cross-encoder evaluates each candidate in the exact generated Asante Twi context in $<5\text{ ms}$ and selects the most contextually appropriate translation.
 
 ```
                          [English Source]
    "They went to see how the trade is doing in the market."
-                                |
-                                v
-               [GLOSS-MT-2 Seq2Seq Translator]
-                                |
-                                v
+                                │
+                                ▼
+                    [Nkrane-MT Seq2Seq Translator]
+                                │
+                                ▼
      "Wɔkɔhwɛɛ sɛnea <trade> no teɛ wɔ dwadibea hɔ."
-                                |
+                                │
      Dictionary candidates for 'trade': ["dwadie", "adwuma", "aguadi"]
-                                |
-                                v
+                                │
+                                ▼
      [Afro-XLMR Cross-Encoder Reranker (This Model)]
-       Pair 1: ("Wɔkɔhwɛɛ sɛnea <trade> no teɛ...", "dwadie") -> 0.984
-       Pair 2: ("Wɔkɔhwɛɛ sɛnea <trade> no teɛ...", "adwuma") -> 0.112
-                                |
-                                v
+       Pair 1: ("Wɔkɔhwɛɛ sɛnea <trade> no teɛ...", "dwadie") -> 0.985
+       Pair 2: ("Wɔkɔhwɛɛ sɛnea <trade> no teɛ...", "adwuma") -> 0.082
+                                │
+                                ▼
                       [Final Translation]
         "Wɔkɔhwɛɛ sɛnea dwadie no teɛ wɔ dwadibea hɔ."
 ```
@@ -95,7 +95,7 @@ import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-model_id = "ghanaopenai/gloss-mt-2-reranker-afro-xlmr"
+model_id = "ghanaopenai/nkrane-mt-reranker-afro-xlmr"
 
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 model = AutoModelForSequenceClassification.from_pretrained(model_id).to(device)
@@ -133,18 +133,18 @@ for cand, score in sorted(zip(candidates, scores), key=lambda x: x[1], reverse=T
 
 ---
 
-### 2. Integration with `gloss-mt-2` Python Package
+### 2. Integration with `nkrane-mt` Python Package
 
 ```python
-from gloss_mt_2 import GlossMT2Translator
-from gloss_mt_2.seq2seq import Seq2SeqModelWrapper
-from gloss_mt_2.reranker import ContextualReranker
+from nkrane_mt import GlossMT2Translator
+from nkrane_mt.seq2seq import Seq2SeqModelWrapper
+from nkrane_mt.reranker import ContextualReranker
 
 # Load fine-tuned NLLB-200 seq2seq generator
 seq2seq = Seq2SeqModelWrapper("ghanaopenai/gloss-mt-2-nllb-600m-en2tw", direction="en-tw")
 
 # Load Afro-XLMR Cross-Encoder Reranker
-reranker = ContextualReranker("ghanaopenai/gloss-mt-2-reranker-afro-xlmr")
+reranker = ContextualReranker("ghanaopenai/nkrane-mt-reranker-afro-xlmr")
 
 # End-to-end pipeline with post-translation contextual disambiguation
 translator = GlossMT2Translator(model=seq2seq, reranker=reranker, direction="en-tw")
@@ -158,29 +158,28 @@ print(res["translation"])
 
 ## 🏋️ Training Setup
 
-- **Dataset:** 606,404 curated training pairs and 13,024 validation pairs built from the clean [`ghanaopenai/gloss-mt-2-en-tw`](https://huggingface.co/datasets/ghanaopenai/gloss-mt-2-en-tw) parallel corpus and Ghanaian lexicons.
+- **Dataset:** 606,404 curated training pairs and 13,024 validation pairs built from Ghanaian parallel corpora and lexicons.
 - **Hardware:** Single NVIDIA H200 (140 GB VRAM), using `bfloat16` and `TF32`.
 - **Optimizer:** AdamW (`lr=1e-5`, cosine learning rate schedule, warmup steps = 500).
 - **Batch Size:** 16 per device with 4 gradient accumulation steps (effective batch size = 64).
 - **Loss Function:** Binary Cross-Entropy with Logits (`nn.BCEWithLogitsLoss`).
-- **Evaluation Strategy:** Evaluated every 500 steps on held-out validation pairs with early stopping patience of 10.
 - **Peak Validation Accuracy:** `97.21%` (loss `0.0872`).
 
 ---
 
 ## 📖 Citation & Repository
 
-If you use this model or the GLOSS-MT-2 pipeline in your research, please cite:
+If you use this model or the Nkrane-MT pipeline in your research, please cite:
 
 ```bibtex
-@misc{gloss_mt_2_2026,
+@misc{nkrane_mt_2026,
   author = {Owusu, S. and GhanaOpenAI Contributors},
-  title = {GLOSS-MT-2: Contextual Lexical Disambiguation & Cross-Encoder Reranking for English-Asante Twi Translation},
+  title = {Nkrane-MT: Contextual Lexical Disambiguation & Cross-Encoder Reranking for English-Asante Twi Translation},
   year = {2026},
   publisher = {Hugging Face},
-  howpublished = {\url{https://huggingface.co/ghanaopenai/gloss-mt-2-reranker-afro-xlmr}}
+  howpublished = {\url{https://huggingface.co/ghanaopenai/nkrane-mt-reranker-afro-xlmr}}
 }
 ```
 
-- **GitHub Repository:** [`GhanaOpenAI/gloss-mt-2`](https://github.com/GhanaOpenAI/gloss-mt-2)
-- **Base Dataset:** [`ghanaopenai/gloss-mt-2-en-tw`](https://huggingface.co/datasets/ghanaopenai/gloss-mt-2-en-tw)
+- **GitHub Repository:** [`GhanaOpenAI/nkrane-mt`](https://github.com/GhanaOpenAI/nkrane-mt)
+- **Parallel Corpus:** [`ghanaopenai/nkrane-mt-parallel-corpus-eng-twi`](https://huggingface.co/datasets/ghanaopenai/nkrane-mt-parallel-corpus-eng-twi)

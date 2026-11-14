@@ -33,7 +33,7 @@ configs:
 
 # Nkrane-MT Parallel Corpus: Entity-Grounded English ↔ Asante Twi (Akan) Parallel Dataset
 
-**`ghanaopenai/nkrane-mt-parallel-corpus-eng-twi`** is a landmark, balanced, 774,000-sentence parallel corpus for training the **Nkrane-MT** (*Nkrane*, in Akan, signifies a message dispatch, communication, and report) machine translation pipeline developed by [GhanaOpenAI](https://github.com/GhanaOpenAI/gloss-mt-2).
+**`ghanaopenai/nkrane-mt-parallel-corpus-eng-twi`** is a landmark, balanced, 774,000-sentence parallel corpus for training the **Nkrane-MT** (*Nkrane*, in Akan, signifies a message dispatch, communication, and report) machine translation pipeline developed by [GhanaOpenAI](https://github.com/GhanaOpenAI/nkrane-mt).
 
 Rather than forcing artificial dictionary term injection before translation, **Nkrane-MT** models are trained with dual-sided bracketed entity preservation:
 1. **English Input (`input`):** Contains targeted concrete noun phrases, compound titles, organizations, places, and demographic groups in angle brackets `<...>` with English determiners outside:
@@ -45,7 +45,7 @@ Rather than forcing artificial dictionary term injection before translation, **N
 4. **Reference Twi (`twi`):** Clean, unbracketed reference Asante Twi translation:
    > `Ghana manpanin no kɔsra Sikasɛm Asoeɛ no wɔ May 2026 mu.`
 
-Post-translation lexical substitution and contextual word-sense disambiguation are handled at inference time by an offline dictionary and our fine-tuned Afro-XLMR cross-encoder reranker ([`ghanaopenai/gloss-mt-2-reranker-afro-xlmr`](https://huggingface.co/ghanaopenai/gloss-mt-2-reranker-afro-xlmr)).
+Post-translation lexical substitution and contextual word-sense disambiguation are handled at inference time by an offline dictionary and our fine-tuned Afro-XLMR cross-encoder reranker ([`ghanaopenai/nkrane-mt-reranker-afro-xlmr`](https://huggingface.co/ghanaopenai/nkrane-mt-reranker-afro-xlmr)).
 
 ---
 
@@ -160,5 +160,5 @@ print("Clean Reference Twi:      ", ds["train"][0]["twi"])
 }
 ```
 
-- **GitHub Repository:** [`GhanaOpenAI/gloss-mt-2`](https://github.com/GhanaOpenAI/gloss-mt-2)
-- **Afro-XLMR Cross-Encoder Reranker:** [`ghanaopenai/gloss-mt-2-reranker-afro-xlmr`](https://huggingface.co/ghanaopenai/gloss-mt-2-reranker-afro-xlmr)
+- **GitHub Repository:** [`GhanaOpenAI/nkrane-mt`](https://github.com/GhanaOpenAI/nkrane-mt)
+- **Afro-XLMR Cross-Encoder Reranker:** [`ghanaopenai/nkrane-mt-reranker-afro-xlmr`](https://huggingface.co/ghanaopenai/nkrane-mt-reranker-afro-xlmr)
