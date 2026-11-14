@@ -28,6 +28,8 @@ from google import genai
 from google.genai import types
 from huggingface_hub import HfApi
 
+from gloss_mt_2.extractor import extract_selective_noun_phrases
+
 MODEL_NAME = "gemini-3.8-live"
 VOICE_NAME = "Zephyr"
 _LEADING_ARTICLES = re.compile(r"^(?:the|a|an|this|that|these|those)\s+", re.IGNORECASE)
@@ -97,43 +99,6 @@ def pack_sentences_chars(sentences: List[str], max_chars: int = 512) -> List[str
     if cur:
         chunks.append(" ".join(cur))
     return chunks
-
-
-def extract_selective_noun_phrases(text: str, nlp) -> List[str]:
-    doc = nlp(text)
-    phrases = []
-    seen = set()
-
-    raw_spans = []
-    for chunk in doc.noun_chunks:
-        if chunk.root.pos_ == "PRON":
-            continue
-        start, end = chunk.start, chunk.end
-        if end < len(doc) and (doc[end].like_num or doc[end].pos_ == "NUM"):
-            end += 1
-        raw_spans.append((start, end))
-
-    for start, end in raw_spans:
-        span_text = doc[start:end].text.strip()
-        span_clean = re.sub(r"^[\W_]+|[\W_]+$", "", span_text)
-        base = _LEADING_ARTICLES.sub("", span_clean).strip()
-        words = base.split()
-        if not words:
-            continue
-
-        is_valid = False
-        if len(words) >= 2:
-            is_valid = True
-        elif len(words) == 1:
-            w = words[0]
-            if w[:1].isupper() and any(c.isalpha() for c in w):
-                is_valid = True
-
-        if is_valid and len(base) >= 2 and base.lower() not in seen:
-            seen.add(base.lower())
-            phrases.append(base)
-
-    return phrases
 
 
 def chunk_key(en: str, tw: str) -> str:

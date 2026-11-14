@@ -52,21 +52,22 @@ The dataset draws from four distinct corpora to ensure comprehensive coverage ac
 
 ## 🎯 Selective Noun Targeting Rules
 
-To eliminate the unnatural syntax of legacy dictionary-injection datasets, targeting strictly follows three rules:
+To eliminate the unnatural syntax of legacy dictionary-injection datasets and preserve natural Akan semantics:
 
-1. **Multi-Word Noun Phrases ($\ge 2$ words):**
-   Compound nouns and entities are targeted, including alphanumeric phrases:
-   - `<Ministry of Finance>`, `<regional hospital>`, `<Kejetia market place>`, `<May 2026>`, `<high court>`, `<small afternoon>`.
-2. **Capitalized Single-Word Entities (Named Entities / Proper Nouns):**
-   - `<Ghana>`, `<Telecel>`, `<Opoku>`, `<Jesus>`, `<Kumasi>`, `<Accra>`.
-3. **Common Lowercase Single-Word Nouns are NOT Bracketed:**
-   - Everyday single-word nouns (`man`, `soldier`, `matter`, `trade`, `nation`, `water`, `house`) are left unbracketed so seq2seq models translate them naturally into Twi without forced glossary substitution.
+1. **Abstract Nouns are EXCLUDED (Translated Freely into Twi):**
+   - Abstract nouns and conceptual terms (`information`, `development`, `history`, `investigation`, `peace`, `justice`, `freedom`, `decision`, `beauty`, `patience`, `knowledge`) are **NEVER bracketed or forced into English**. Models translate them naturally, idiomatically, and freely into Asante Twi.
+2. **Concrete (Non-Abstract) Noun Phrases are INCLUDED (Even Single Words):**
+   - Tangible, physical objects, entities, and institutions (`hospital`, `regional hospital`, `car`, `road`, `soldier`, `doctor`, `gold`, `water`, `phone`, `computer`, `court`, `market place`) are included, whether single-word or multi-word.
+3. **Capitalized Nouns / Named Entities:**
+   - Capitalized entities appearing inside the sentence are preserved (`Ghana`, `Telecel`, `Opoku`, `Jesus`, `Ministry of Finance`, `May 2026`).
+   - **Sentence-Initial Capitalization Rule:** If a noun phrase begins the sentence, it is preserved if it is **multi-word** (`Ministry of Finance...`, `Telecel Ghana...`). If it is a **single word** (`Information...`, `Development...`), capitalization is treated as grammatical sentence-initial casing, so the abstractness filter applies: it is kept only if concrete/non-abstract (`Hospital...`, `Ghana...`) and excluded if abstract (`Information...`, `Development...`).
 4. **Grammar & Determiners Stay Outside Brackets:**
    - All Twi articles and determiners (`no`, `yi`, `bi`, `mu`, `ho`) stay in Twi outside the brackets:
-     - `saa <matter> yi` *(not `<this matter>`)*
-     - `<government> no` *(not `<the government>`)*
+     - `saa <hospital> yi` *(not `<this hospital>`)*
+     - `<court> no` *(not `<the court>`)*
      - `wɔ <May 2026> mu`
-5. **Length & Punctuation Guard:**
+5. **Length & Sentence Boundary Guard:**
+   - 100% complete grammatical sentences $\le 512$ characters (never broken across sentences). All markdown formatting (`|`, `---`, `#`, `>`) is stripped.
    - 100% complete grammatical sentences $\le 512$ characters (never broken across sentences). All markdown formatting (`|`, `---`, `#`, `>`) is stripped.
 
 ---
