@@ -76,6 +76,7 @@ def load_api_keys() -> List[str]:
     key_file_candidates = [
         "gemini_keys.txt",
         "../gemini_keys.txt",
+        "/mnt/volume_d2wey28/projects/gloss-mt-2/gemini_keys.txt",
         "/home/owusus/Documents/GitHub/gemini-live-keys.txt",
     ]
     for candidate in key_file_candidates:
