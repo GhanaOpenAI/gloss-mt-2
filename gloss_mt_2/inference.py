@@ -4,6 +4,7 @@ import re
 from typing import Dict, List, Optional, Tuple
 
 from .lookup import TwiLookup, normalize_term
+from .reranker import ContextualReranker
 
 _BRACKETED = re.compile(r"<([^<>\n]{1,120})>")
 
@@ -13,10 +14,13 @@ def substitute_glossary(
     lookup: Optional[TwiLookup] = None,
     direction: str = "en-tw",
     custom_glossary: Optional[Dict[str, str]] = None,
+    reranker: Optional[ContextualReranker] = None,
+    source_context: str = "",
 ) -> Tuple[str, List[Dict[str, str]]]:
     """
     Finds every `<term>` in the model's generated translation:
-    - If `term` is found in custom_glossary or lookup dictionary -> replaces with its translation.
+    - If `term` has multiple options in the dictionary and a reranker is provided,
+      the reranker scores the options in `source_context` to pick the contextually best one.
     - If `term` is not found (e.g. proper name, unknown entity) -> strips brackets and preserves the term.
     """
     applied = []
@@ -33,7 +37,16 @@ def substitute_glossary(
                     break
 
         if trans is None and lookup is not None:
-            trans = lookup.lookup(norm, direction=direction)
+            # Check multi-candidate table first
+            candidates = getattr(lookup, "candidates", {}).get(norm, [])
+            if candidates and len(candidates) > 1 and reranker is not None and source_context:
+                trans = reranker.rerank(
+                    context=source_context,
+                    noun_phrase=term,
+                    candidates=candidates,
+                )
+            else:
+                trans = lookup.lookup(norm, direction=direction)
 
         if trans:
             # Preserve capitalization of the source match
@@ -50,24 +63,25 @@ def substitute_glossary(
             return term
 
     final_text = _BRACKETED.sub(sub_fn, translation)
-    # Collapse any stray double spaces
     final_text = re.sub(r" +", " ", final_text).strip()
     return final_text, applied
 
 
 class GlossMT2Translator:
-    """End-to-end translator for GLOSS-MT-2 models."""
+    """End-to-end translator for GLOSS-MT-2 models with optional contextual reranking."""
 
     def __init__(
         self,
         model,
         direction: str = "en-tw",
         lookup: Optional[TwiLookup] = None,
+        reranker: Optional[ContextualReranker] = None,
         custom_glossary: Optional[Dict[str, str]] = None,
     ):
         self.model = model
         self.direction = direction.lower()
         self.lookup = lookup or TwiLookup()
+        self.reranker = reranker
         self.custom_glossary = custom_glossary or {}
 
     def translate(
@@ -76,21 +90,21 @@ class GlossMT2Translator:
         custom_glossary: Optional[Dict[str, str]] = None,
     ) -> Dict:
         """
-        Translates raw input text (no preprocessing required) and applies post-generation substitution.
+        Translates raw input text (no preprocessing required) and applies smart contextual substitution.
         """
         if not text or not text.strip():
             return {"translation": "", "raw_translation": "", "substitutions": []}
 
-        # 1. Model generation (accepts plain, un-preprocessed text; outputs text with <untranslated_nouns>)
         raw_translation = self.model.generate(text)
 
-        # 2. Post-generation glossary substitution
         merged_glossary = {**self.custom_glossary, **(custom_glossary or {})}
         final_translation, substitutions = substitute_glossary(
             translation=raw_translation,
             lookup=self.lookup,
             direction=self.direction,
             custom_glossary=merged_glossary,
+            reranker=self.reranker,
+            source_context=text,
         )
 
         return {
