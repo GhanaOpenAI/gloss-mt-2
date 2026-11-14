@@ -304,7 +304,12 @@ async def periodic_hf_pusher(cache: Dict, all_chunks: List[Dict], repo_id: str, 
                 res = cache.get(c["key"])
                 if not res or not res.get("target_twi"):
                     continue
-                tgt = res["target_twi"].strip()
+                tgt = res["target_twi"]
+                if isinstance(tgt, list):
+                    tgt = " ".join(tgt)
+                if not isinstance(tgt, str):
+                    continue
+                tgt = tgt.strip()
                 if pattern.search(tgt) and tgt.count("<") == tgt.count(">"):
                     valid_rows.append({
                         "input": c["en"],
@@ -487,7 +492,12 @@ async def main_async(args):
         res = cache.get(c["key"])
         if not res or not res.get("target_twi"):
             continue
-        tgt = res["target_twi"].strip()
+        tgt = res["target_twi"]
+        if isinstance(tgt, list):
+            tgt = " ".join(tgt)
+        if not isinstance(tgt, str):
+            continue
+        tgt = tgt.strip()
         if not pattern.search(tgt) or tgt.count("<") != tgt.count(">"):
             continue
         valid_rows.append({
