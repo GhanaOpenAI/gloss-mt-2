@@ -9,6 +9,7 @@ LOG_DIR="$PROJ/logs"
 
 mkdir -p "$LOG_DIR" "$OUT"
 export LD_LIBRARY_PATH=/usr/local/cuda-13.0/compat:$LD_LIBRARY_PATH
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 cd "$PROJ/repo"
 
 # 1. Build reranker dataset if not present
@@ -27,9 +28,10 @@ $VENV/bin/python training/train_reranker.py \
     --data "$PROJ/data/reranker_dataset" \
     --out "$OUT" \
     --epochs 2 \
-    --batch-size 32 \
-    --grad-accum 2 \
+    --batch-size 16 \
+    --grad-accum 4 \
     --lr 1e-5 \
+    --max-length 160 \
     --eval-steps 500 \
     --early-stopping-patience 10 \
     >> "$LOG_DIR/train_reranker.log" 2>&1

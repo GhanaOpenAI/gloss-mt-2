@@ -120,7 +120,7 @@ def main():
         lr_scheduler_type="cosine",
         warmup_steps=args.warmup_steps,
         per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size * 2,
+        per_device_eval_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
         bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
         tf32=True,
@@ -134,7 +134,7 @@ def main():
         metric_for_best_model="accuracy",
         greater_is_better=True,
         report_to="none",
-        dataloader_num_workers=4,
+        dataloader_num_workers=2,
     )
 
     trainer = BCETrainer(
