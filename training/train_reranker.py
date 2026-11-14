@@ -70,7 +70,7 @@ def main():
     ap.add_argument("--max-length", type=int, default=256)
     ap.add_argument("--eval-steps", type=int, default=500)
     ap.add_argument("--early-stopping-patience", type=int, default=3)
-    ap.add_argument("--warmup-ratio", type=float, default=0.1)
+    ap.add_argument("--warmup-steps", type=int, default=500)
     args = ap.parse_args()
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -118,7 +118,7 @@ def main():
         learning_rate=args.lr,
         optim="adamw_torch",
         lr_scheduler_type="cosine",
-        warmup_ratio=args.warmup_ratio,
+        warmup_steps=args.warmup_steps,
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size * 2,
         gradient_accumulation_steps=args.grad_accum,
