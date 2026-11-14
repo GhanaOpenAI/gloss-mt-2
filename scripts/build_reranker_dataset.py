@@ -1,14 +1,14 @@
-"""Build Cross-Encoder Reranker dataset for Contextual Lexical Disambiguation.
+"""Build Cross-Encoder Reranker dataset for Contextual Lexical Disambiguation in GLOSS-MT-2.
 
-Given an English sentence with a marked target noun phrase <noun>, predicts the correct
-Asante Twi translation among candidate dictionary options.
+Given a Twi sentence containing an English noun phrase in angle brackets <noun>:
+The model predicts which candidate Twi translation from the dictionary best fits into this Twi sentence.
 
 Format:
-  - text_a: English sentence with target noun enclosed in <...>:
-            "The judge entered the <court> to begin the trial."
-  - text_b: Candidate Asante Twi translation:
-            "asɛnnibea"
-  - label:  1.0 if correct translation in context, 0.0 otherwise.
+  - text_a: Twi sentence containing the English noun phrase in <...>:
+            "Ɛyɛ <history> a ɛfata sɛ yɛkae."
+  - text_b: Candidate Asante Twi translation from dictionary:
+            "abakɔsɛm"
+  - label:  1.0 if correct translation in this sentence context, 0.0 otherwise.
 """
 
 import argparse
@@ -24,7 +24,7 @@ from datasets import Dataset, DatasetDict, load_dataset
 
 
 def load_multi_dictionary(dict_path: str) -> Dict[str, List[str]]:
-    print(f"Loading dictionary from {dict_path}...")
+    print(f"Loading dictionary from {dict_path}...", flush=True)
     table = {}
     with gzip.open(dict_path, "rt", encoding="utf-8") as f:
         for line in f:
@@ -34,22 +34,8 @@ def load_multi_dictionary(dict_path: str) -> Dict[str, List[str]]:
             if len(parts) > 1:
                 key = " ".join(parts[0].lower().split())
                 table[key] = [p.strip() for p in parts[1:] if p.strip()]
-    print(f"Loaded {len(table):,} dictionary entries.")
+    print(f"Loaded {len(table):,} dictionary entries.", flush=True)
     return table
-
-
-def mark_noun_in_sentence(sentence: str, noun: str) -> Optional[str]:
-    """Enclose the target noun in <...> inside the sentence."""
-    words = noun.split()
-    if not words:
-        return None
-    pattern = re.compile(r"(?<!\w)" + r"\s+".join(map(re.escape, words)) + r"(?!\w)", re.IGNORECASE)
-    # Mark only the first occurrence or match
-    m = pattern.search(sentence)
-    if m:
-        start, end = m.span()
-        return sentence[:start] + f"<{m.group(0)}>" + sentence[end:]
-    return None
 
 
 def main():
@@ -66,24 +52,22 @@ def main():
     all_twi_vocab = [cand for cands in multi_dict.values() for cand in cands if len(cand) >= 2]
     random.seed(42)
 
-    print(f"Loading aligned dataset from {args.source_dataset}...")
+    print(f"Loading aligned dataset from {args.source_dataset}...", flush=True)
     ds = load_dataset(args.source_dataset)
 
     pattern_brackets = re.compile(r"<([^<>\n]+)>")
 
     splits_data = {}
     for split in ds.keys():
-        print(f"Building reranker samples for {split} split ({len(ds[split]):,} rows)...")
+        print(f"Building reranker samples for {split} split ({len(ds[split]):,} rows)...", flush=True)
         reranker_rows = []
         ranking_eval_rows = []
 
         for r in ds[split]:
-            en = r["english"].strip()
-            tw = r["twi"].strip()
-            tgt_bracketed = r["target"].strip()
+            twi_context = r["target"].strip()  # Twi sentence with <English nouns>
+            gold_twi = r["twi"].strip()        # Clean gold Twi reference
 
-            # The bracketed English nouns in the target sentence
-            en_nouns = pattern_brackets.findall(tgt_bracketed)
+            en_nouns = pattern_brackets.findall(twi_context)
             if not en_nouns:
                 continue
 
@@ -91,70 +75,65 @@ def main():
                 noun_clean = noun.strip()
                 norm_noun = " ".join(noun_clean.lower().split())
 
-                # Find the marked context
-                marked_context = mark_noun_in_sentence(en, noun_clean)
-                if not marked_context:
+                candidates = multi_dict.get(norm_noun, [])
+                if not candidates:
                     continue
 
-                # Find the corresponding gold Twi word in tw:
-                # We can check dictionary candidate options for norm_noun that appear in tw
-                candidates = multi_dict.get(norm_noun, [])
-                gold_tw = None
+                # Find which candidate was used in the gold Twi sentence
+                gold_match = None
                 for c in candidates:
-                    # Check whole word match in tw
-                    if re.search(r"(?<!\w)" + re.escape(c) + r"(?!\w)", tw, re.IGNORECASE):
-                        gold_tw = c
+                    if re.search(r"(?<!\w)" + re.escape(c) + r"(?!\w)", gold_twi, re.IGNORECASE):
+                        gold_match = c
                         break
 
-                if not gold_tw:
-                    # If not in candidate list, check if single dictionary option or alignment
+                if not gold_match:
                     continue
 
                 # Positive sample (label 1.0)
                 reranker_rows.append({
-                    "text_a": marked_context,
-                    "text_b": gold_tw,
+                    "text_a": twi_context,
+                    "text_b": gold_match,
                     "label": 1.0,
                     "noun_phrase": noun_clean,
                 })
 
-                # Hard negative samples from dictionary (label 0.0)
-                neg_cands = [c for c in candidates if c.lower() != gold_tw.lower()]
+                # Hard negative samples from dictionary candidates (label 0.0)
+                neg_cands = [c for c in candidates if c.lower() != gold_match.lower()]
 
-                # If we need more negatives, sample lexical distractors from Twi vocab
+                # If fewer than negatives_per_pos, sample lexical distractors from general Twi vocab
                 while len(neg_cands) < args.negatives_per_pos:
                     rand_c = random.choice(all_twi_vocab)
-                    if rand_c.lower() != gold_tw.lower() and rand_c not in neg_cands:
+                    if rand_c.lower() != gold_match.lower() and rand_c not in neg_cands:
                         neg_cands.append(rand_c)
 
                 for neg in neg_cands[: args.negatives_per_pos]:
                     reranker_rows.append({
-                        "text_a": marked_context,
+                        "text_a": twi_context,
                         "text_b": neg,
                         "label": 0.0,
                         "noun_phrase": noun_clean,
                     })
 
                 ranking_eval_rows.append({
-                    "context": marked_context,
+                    "context": twi_context,
                     "noun_phrase": noun_clean,
-                    "positive": gold_tw,
-                    "candidates": [gold_tw] + neg_cands[: args.negatives_per_pos],
+                    "positive": gold_match,
+                    "candidates": [gold_match] + neg_cands[: args.negatives_per_pos],
                 })
 
-        print(f"  {split}: {len(reranker_rows):,} classification pairs | {len(ranking_eval_rows):,} disambiguation queries")
+        print(f"  {split}: {len(reranker_rows):,} classification pairs | {len(ranking_eval_rows):,} disambiguation queries", flush=True)
         splits_data[split] = Dataset.from_list(reranker_rows)
 
     ds_dict = DatasetDict(splits_data)
     os.makedirs(args.out_dir, exist_ok=True)
-    print(f"Saving reranker dataset to {args.out_dir}...")
+    print(f"Saving reranker dataset to {args.out_dir}...", flush=True)
     ds_dict.save_to_disk(args.out_dir)
 
     if args.push:
-        print(f"Pushing to Hugging Face {args.push}...")
+        print(f"Pushing to Hugging Face {args.push}...", flush=True)
         ds_dict.push_to_hub(args.push)
 
-    print(f"Reranker dataset generated in {time.time()-t0:.1f}s!")
+    print(f"Reranker dataset generated in {time.time()-t0:.1f}s!", flush=True)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ from typing import List, Optional
 
 
 class ContextualReranker:
-    """Reranks candidate Twi translations for an English noun phrase in sentence context."""
+    """Reranks candidate Twi translations for an English noun phrase embedded in a Twi sentence."""
 
     def __init__(
         self,
@@ -25,24 +25,20 @@ class ContextualReranker:
 
     def rerank(
         self,
-        context: str,
+        twi_context: str,
         noun_phrase: str,
         candidates: List[str],
     ) -> str:
-        """Given sentence context and candidates, returns the candidate with the highest score."""
+        """
+        Given the generated Twi sentence containing <noun_phrase> and candidate Twi translations:
+        returns the candidate with the highest contextual logit.
+        """
         if not candidates:
             return noun_phrase
         if len(candidates) == 1:
             return candidates[0]
 
-        # Ensure noun_phrase is marked in context if not already
-        if f"<{noun_phrase}>" not in context:
-            pat = re.compile(r"(?<!\w)" + re.escape(noun_phrase) + r"(?!\w)", re.IGNORECASE)
-            marked_context = pat.sub(f"<{noun_phrase}>", context, count=1)
-        else:
-            marked_context = context
-
-        pairs_a = [marked_context] * len(candidates)
+        pairs_a = [twi_context] * len(candidates)
         pairs_b = candidates
 
         enc = self.tok(
@@ -54,8 +50,8 @@ class ContextualReranker:
             max_length=self.max_length,
         ).to(self.device)
 
-        with torch.inference_mode():
+        with self.torch.inference_mode():
             logits = self.model(**enc).logits.squeeze(-1)
 
-        best_idx = int(torch.argmax(logits).item())
+        best_idx = int(self.torch.argmax(logits).item())
         return candidates[best_idx]
