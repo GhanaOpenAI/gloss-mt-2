@@ -1,10 +1,13 @@
-"""Build the Grand GLOSS-MT-2 Dataset across 4 major pillars:
+"""Build the Grand GLOSS-MT-2 Dataset across 4 major pillars with Selective Noun Targeting:
 1. GHOK Parallel Corpus (~457k passages: STEM, technical, academic, governance)
 2. Pristine Twi-English (~450k passages: balanced 25% Narrative, 25% Dialogue, 25% Storyful, 25% Monologue)
 3. Ghanaian News Paragraphs (~256k passages: Ghanaian current affairs, politics, economy)
 4. JW Twi-English Corpus (~225k sentences: verse-aligned Akan literature & daily life)
 
-Total raw passages: ~1.4M -> ~2.5M complete sentence chunks (<= 512 chars).
+Selective Targeting Rules:
+- Multi-word phrases (>= 2 words, where 2nd word can be a number e.g. 'May 2026', 'news reporters', 'high court').
+- Single-word nouns ONLY if capitalized (Named Entities / Proper Nouns e.g. 'Ghana', 'Telecel', 'Jesus').
+- Common single-word lowercase nouns are left unbracketed so models translate them freely and naturally.
 """
 
 import argparse
@@ -27,31 +30,21 @@ from huggingface_hub import HfApi
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 _LEADING_ARTICLES = re.compile(r"^(?:the|a|an|this|that|these|those)\s+", re.IGNORECASE)
 
-PROMPT_TEMPLATE = """Below is an English text, its Asante Twi translation, and a list of English base noun phrases.
+PROMPT_TEMPLATE = """Below is an English text, its Asante Twi translation, and a selective list of English key phrases.
+The key phrases are either:
+1. Multi-word phrases (at least 2 words, where the second word can be a number, e.g. 'small afternoon', 'news reporters', 'Kejetia market place', 'May 2026', 'high court').
+2. Single-word proper nouns / named entities that are capitalized (e.g. 'Ghana', 'Telecel', 'Opoku', 'Jesus').
+Common single-word lowercase nouns are left unbracketed so the model translates them naturally into Twi!
 
-CRITICAL Grammar & Bracketing Rules:
-1. ONLY the base noun / noun phrase must be inside the angle brackets.
-   DO NOT include any articles or determiners ('the', 'a', 'an', 'this', 'that', 'these', 'those') inside the brackets!
-   - Examples of correct bracketing:
-     - '<government> no' (NOT '<the government>')
-     - '<news reporters> no' (NOT '<the news reporters>')
-     - '<matter> yi' (NOT '<this matter>')
-     - 'sɛ <soldier>' (NOT '<a soldier>')
-     - '<trade> no' (NOT '<the trade>')
-     - '<nation> yi' (NOT '<this nation>')
-
-2. In the Twi target sentence, replace only the translated noun with the English base noun in angle brackets, keeping the Twi determiners ('no', 'yi', 'bi', etc.) in Twi outside the brackets:
-   - 'aban no' becomes '<government> no'
-   - 'amaneɛbɔ adwumayɛfoɔ no' becomes '<news reporters> no'
-   - 'asɛm yi' becomes '<matter> yi'
-   - 'dwadie no' becomes '<trade> no'
-   - 'ɔman yi' becomes '<nation> yi'
-
-3. Never nest brackets. Do not change any surrounding words.
+Task:
+For each key phrase in the list, identify its corresponding translation in the Twi text.
+Then produce a target Twi text where ONLY these specific key phrases are replaced by the English phrase in angle brackets <...>.
+All Twi determiners ('no', 'yi', 'bi', etc.) must stay in Twi outside the brackets!
+Never nest brackets. Leave all other words completely in natural Twi.
 
 Return ONLY a JSON object with:
-- "mapping": English base noun -> matching Twi noun span (excluding determiners like 'no', 'yi', 'bi')
-- "target_twi": Twi text where ONLY the base nouns are in angle brackets <noun>, with all Twi determiners kept outside.
+- "mapping": English phrase -> matching Twi span
+- "target_twi": Twi text where ONLY the listed phrases are in angle brackets <noun>.
 
 English:
 {en}
@@ -59,12 +52,11 @@ English:
 Twi:
 {tw}
 
-Noun phrases:
+Key phrases:
 {phrases}"""
 
 
 def load_api_keys() -> List[str]:
-    """Dynamically load Gemini API keys from environment or local key files."""
     keys = []
     env_keys = os.environ.get("GEMINI_API_KEYS", "")
     if env_keys:
@@ -130,19 +122,44 @@ def pack_sentences_chars(sentences: List[str], max_chars: int = 512) -> List[str
     return chunks
 
 
-def extract_base_noun_phrases(text: str, nlp) -> List[str]:
+def extract_selective_noun_phrases(text: str, nlp) -> List[str]:
     doc = nlp(text)
     phrases = []
     seen = set()
+
+    raw_spans = []
     for chunk in doc.noun_chunks:
         if chunk.root.pos_ == "PRON":
             continue
-        raw_clean = re.sub(r"\s+", " ", chunk.text).strip()
-        raw_clean = re.sub(r"^[\W_]+|[\W_]+$", "", raw_clean)
-        base = _LEADING_ARTICLES.sub("", raw_clean).strip()
-        if len(base) >= 2 and base.lower() not in seen and re.search(r"[a-zA-Z]{2,}", base):
+        start, end = chunk.start, chunk.end
+        # If the token immediately following is a number (e.g. "May 2026", "Vision 2030"), extend span
+        if end < len(doc) and (doc[end].like_num or doc[end].pos_ == "NUM"):
+            end += 1
+        raw_spans.append((start, end))
+
+    for start, end in raw_spans:
+        span_text = doc[start:end].text.strip()
+        span_clean = re.sub(r"^[\W_]+|[\W_]+$", "", span_text)
+        base = _LEADING_ARTICLES.sub("", span_clean).strip()
+        words = base.split()
+        if not words:
+            continue
+
+        # Criteria:
+        # 1. Multi-word phrase (>= 2 words)
+        # 2. Single-word ONLY if capitalized (Named Entity / Proper Noun)
+        is_valid = False
+        if len(words) >= 2:
+            is_valid = True
+        elif len(words) == 1:
+            w = words[0]
+            if w[:1].isupper() and any(c.isalpha() for c in w):
+                is_valid = True
+
+        if is_valid and len(base) >= 2 and base.lower() not in seen:
             seen.add(base.lower())
             phrases.append(base)
+
     return phrases
 
 
@@ -198,7 +215,7 @@ def main():
             all_chunks = json.load(f)
         print(f"Loaded {len(all_chunks):,} pre-chunked items in {time.time()-t0:.2f}s", flush=True)
     else:
-        print("Extracting and chunking across all 4 pillars...", flush=True)
+        print("Extracting and chunking across all 4 pillars with selective noun targeting...", flush=True)
         t0 = time.time()
         nlp = spacy.load("en_core_web_sm", disable=["ner", "lemmatizer"])
         all_chunks = []
@@ -217,7 +234,7 @@ def main():
                     k = chunk_key(en_clean, tw_clean)
                     if k not in seen_keys:
                         seen_keys.add(k)
-                        ph = extract_base_noun_phrases(en_clean, nlp)
+                        ph = extract_selective_noun_phrases(en_clean, nlp)
                         if ph:
                             all_chunks.append({"en": en_clean, "tw": tw_clean, "phrases": ph, "key": k, "source": source_tag})
                 return
@@ -229,7 +246,7 @@ def main():
                     k = chunk_key(ec, tc)
                     if k not in seen_keys:
                         seen_keys.add(k)
-                        ph = extract_base_noun_phrases(ec, nlp)
+                        ph = extract_selective_noun_phrases(ec, nlp)
                         if ph:
                             all_chunks.append({"en": ec, "tw": tc, "phrases": ph, "key": k, "source": source_tag})
 
@@ -381,19 +398,21 @@ configs:
 
 # GLOSS-MT-2: Grand Multi-Pillar English → Asante Twi (Akan) Parallel Dataset
 
-Massive, balanced parallel dataset for **GLOSS-MT-2** spanning:
+Massive, balanced parallel dataset for **GLOSS-MT-2** with selective noun targeting (multi-word phrases & capitalized entities only):
 1. **GHOK Parallel Corpus:** STEM, technical, academic, and governance text.
 2. **Pristine Twi-English:** Balanced across Monologue, Narrative, Dialogue, and Storyful styles.
 3. **Ghanaian News Paragraphs:** Real Ghanaian news and current affairs.
 4. **JW African Corpus:** Verse-aligned literature and dialogue.
 
-### Paradigm
-- **Input (`input`):** Raw, natural English sentence with **NO brackets** and **NO markdown** (zero preprocessing):
-  `It reached a small afternoon, and the news reporters went to the Kejetia market place. They went to see how the trade is there now. This matter is heavy.`
-- **Target (`target`):** Fluent Asante Twi translation using the base **English noun phrases** in angle brackets `<noun>` with all Twi determiners outside:
-  `Ɛduruu <afternoon> ketewa bi, na <news reporters> no nsrane kɔɔ <Kejetia market place> hɔ. Wɔkɔhwɛɛ sɛnea <trade> no teɛ wɔ hɔ seisei. <matter> yi yɛ duru.`
-- **Clean Reference Target (`twi`):** `Ɛduruu owia ketewa bi, na amaneɛbɔ adwumayɛfoɔ no nsrane kɔɔ Kejetia dwadibea hɔ. Wɔkɔhwɛɛ sɛnea dwadie no teɛ wɔ hɔ seisei. Asɛm yi yɛ duru.`
-- **Clean Reference Source (`english`):** `It reached a small afternoon, and the news reporters went to the Kejetia market place. They went to see how the trade is there now. This matter is heavy.`
+### Selective Targeting Paradigm
+- **Multi-word phrases ($\ge 2$ words):** `<small afternoon>`, `<news reporters>`, `<Kejetia market place>`, `<May 2026>`, `<UCC certificate>`, `<high court>`.
+- **Single-word entities ONLY if capitalized:** `<Ghana>`, `<Telecel>`, `<Opoku>`, `<Jesus>`.
+- **Common single-word lowercase nouns are NOT bracketed:** `man`, `day`, `soldier`, `matter`, `trade`, `nation` translate freely and naturally into Twi.
+- **Input (`input`):** Raw, natural English sentence with **NO brackets** and **NO markdown** (zero preprocessing).
+- **Target (`target`):** Fluent Asante Twi translation using ONLY targeted key phrases in angle brackets `<noun>` with all Twi determiners outside:
+  `Ɛduruu <small afternoon> bi, na <news reporters> no nsrane kɔɔ <Kejetia market place> hɔ. Wɔkɔhwɛɛ sɛnea dwadie no teɛ wɔ hɔ seisei. Asɛm yi yɛ duru. Aban no de too dwa sɛ ɔpɛ sɛ ɔsom <Ghana> sɛ asrafoɔ.`
+- **Clean Reference Target (`twi`):** `Ɛduruu owia ketewa bi, na amaneɛbɔ adwumayɛfoɔ no nsrane kɔɔ Kejetia dwadibea hɔ. Wɔkɔhwɛɛ sɛnea dwadie no teɛ wɔ hɔ seisei. Asɛm yi yɛ duru. Aban no de too dwa sɛ ɔpɛ sɛ ɔsom Ghana sɛ asrafoɔ.`
+- **Clean Reference Source (`english`):** `It reached a small afternoon, and the news reporters went to the Kejetia market place. They went to see how the trade is there now. This matter is heavy. The government announced that he wants to serve Ghana as a soldier.`
 
 ### Split Statistics
 | Split | Samples | Notes |
