@@ -38,7 +38,7 @@ def substitute_glossary(
 
         if trans is None and lookup is not None:
             # Check multi-candidate table first
-            candidates = getattr(lookup, "candidates", {}).get(norm, [])
+            candidates = lookup.get_candidates(norm, direction=direction) if hasattr(lookup, "get_candidates") else getattr(lookup, "candidates", {}).get(norm, [])
             if candidates and len(candidates) > 1 and reranker is not None and source_context:
                 trans = reranker.rerank(
                     twi_context=source_context,
