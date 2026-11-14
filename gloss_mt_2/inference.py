@@ -41,7 +41,7 @@ def substitute_glossary(
             candidates = getattr(lookup, "candidates", {}).get(norm, [])
             if candidates and len(candidates) > 1 and reranker is not None and source_context:
                 trans = reranker.rerank(
-                    context=source_context,
+                    twi_context=source_context,
                     noun_phrase=term,
                     candidates=candidates,
                 )
