@@ -4,7 +4,7 @@ set -e
 PROJ="/mnt/volume_d2wey28/projects/gloss-mt-2"
 MODEL="Helsinki-NLP/opus-mt-en-tw"
 DIRECTION="en-tw"
-DATA="$PROJ/data/en_tw_512"
+DATA="$PROJ/data/en_tw_grand"
 OUT="$PROJ/checkpoints/opus-mt-en2tw"
 VENV="$PROJ/.venv"
 LOG_DIR="$PROJ/logs"
