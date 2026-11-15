@@ -160,8 +160,9 @@ def substitute_glossary(
 
 
 class GlossMT2Translator:
-    """End-to-end translator for GLOSS-MT-2 models with optional contextual reranking.
+    """End-to-end translator for Nkrane-MT (formerly GLOSS-MT-2) models with optional contextual reranking.
 
+    Accepts a Hugging Face model identifier/path (str) or a model object with a `.generate()` method.
     By default, the heavy offline dictionary is NOT loaded unless explicitly requested via
     `use_default_dictionary=True` or `lookup=TwiLookup()`. Custom glossaries can be passed
     as lists, dicts, or files.
@@ -172,18 +173,48 @@ class GlossMT2Translator:
 
     def __init__(
         self,
-        model,
+        model: Any,
         direction: str = "en-tw",
         lookup: Optional[TwiLookup] = None,
         reranker: Optional[ContextualReranker] = None,
         custom_glossary: Optional[Union[Dict, List]] = None,
         use_default_dictionary: bool = False,
         marker: Optional[NounPhraseMarker] = None,
+        marker_model_name: Optional[str] = None,
+        device: Optional[str] = None,
     ):
-        self.model = model
         self.direction = direction.lower()
         self.reranker = reranker
-        self.marker = marker or NounPhraseMarker()
+
+        # Setup marker
+        if marker is not None:
+            self.marker = marker
+        elif marker_model_name:
+            self.marker = NounPhraseMarker(method="model", model_name_or_path=marker_model_name)
+        else:
+            self.marker = NounPhraseMarker(method="rules")
+
+        # Setup model / tokenizer
+        self._is_hf_model = False
+        self.tokenizer = None
+        self.raw_model = None
+
+        if isinstance(model, str):
+            import torch
+            from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+            self.device = device or ("cuda:0" if torch.cuda.is_available() else "cpu")
+            self.tokenizer = AutoTokenizer.from_pretrained(model)
+            dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
+            self.raw_model = AutoModelForSeq2SeqLM.from_pretrained(model, dtype=dtype).to(self.device)
+            self.raw_model.eval()
+            self._is_hf_model = True
+        else:
+            self.raw_model = model
+            self.tokenizer = getattr(model, "tokenizer", None)
+            self._is_hf_model = False
+
+        self.model = model
 
         if lookup is not None:
             self.lookup = lookup
@@ -218,7 +249,20 @@ class GlossMT2Translator:
         else:
             marked_input = text
 
-        raw_translation = self.model.generate(marked_input)
+        if self._is_hf_model:
+            import torch
+
+            inputs = self.tokenizer(marked_input, return_tensors="pt").to(self.device)
+            gen_kwargs = {"max_new_tokens": 256}
+            if hasattr(self.tokenizer, "tgt_lang") and self.tokenizer.tgt_lang:
+                gen_kwargs["forced_bos_token_id"] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.tgt_lang)
+            with torch.no_grad():
+                outputs = self.raw_model.generate(**inputs, **gen_kwargs)
+            raw_translation = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0].strip()
+        elif hasattr(self.raw_model, "generate"):
+            raw_translation = self.raw_model.generate(marked_input)
+        else:
+            raw_translation = str(self.raw_model(marked_input))
 
         final_translation, substitutions = substitute_glossary(
             translation=raw_translation,
@@ -235,3 +279,7 @@ class GlossMT2Translator:
             "marked_input": marked_input,
             "substitutions": substitutions,
         }
+
+
+# Alias for backwards and modern compatibility
+NkraneMTTranslator = GlossMT2Translator
