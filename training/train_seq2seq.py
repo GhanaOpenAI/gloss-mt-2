@@ -76,6 +76,7 @@ def main():
     ap.add_argument("--early-stopping-patience", type=int, default=4)
     ap.add_argument("--gen-eval-samples", type=int, default=150)
     ap.add_argument("--warmup-steps", type=int, default=200)
+    ap.add_argument("--push", default=None, help="Optional HF repo id to push to")
     args = ap.parse_args()
 
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -222,6 +223,11 @@ def main():
 
     with open(os.path.join(args.out, "training_config.json"), "w") as f:
         json.dump(vars(args), f, indent=2)
+
+    if args.push:
+        print(f"Pushing model and tokenizer to Hugging Face {args.push}...")
+        trainer.push_to_hub(args.push)
+        tok.push_to_hub(args.push)
 
     print("Training finished successfully!")
 
