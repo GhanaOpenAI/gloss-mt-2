@@ -251,12 +251,14 @@ async def periodic_hf_pusher(cache: Dict, all_chunks: List[Dict], repo_id: str, 
                     continue
                 if "<" in tgt and tgt.count("<") != tgt.count(">"):
                     continue
+                raw_p = res.get("phrases")
+                phrases_list = [str(x) for x in raw_p if x and str(x).strip()] if isinstance(raw_p, list) else []
                 valid_rows.append({
                     "input": inp.strip(),
                     "target": tgt.strip(),
                     "english": c["en"],
                     "twi": c["tw"],
-                    "phrases": res.get("phrases", []),
+                    "phrases": phrases_list,
                     "source": c.get("source", "grand"),
                 })
             if len(valid_rows) >= 5000:
@@ -434,12 +436,14 @@ async def main_async(args):
             continue
         if "<" in tgt and tgt.count("<") != tgt.count(">"):
             continue
+        raw_p = res.get("phrases")
+        phrases_list = [str(x) for x in raw_p if x and str(x).strip()] if isinstance(raw_p, list) else []
         valid_rows.append({
             "input": inp.strip(),
             "target": tgt.strip(),
             "english": c["en"],
             "twi": c["tw"],
-            "phrases": res.get("phrases", []),
+            "phrases": phrases_list,
             "source": c.get("source", "grand"),
         })
 
