@@ -123,11 +123,11 @@ Each record contains 6 fields:
 ## 🔬 Dataset Splits & Alignment Engine
 
 - **Alignment Engine:** Google Gemini 3.8 Live API via 36 concurrent WebSocket workers across 12 pooled API keys with 10-pair batch streaming.
-- **Total Corpus Size:** ~774,443 sentence pairs.
+- **Total Corpus Size:** **769,594 sentence pairs** (100% complete grammatical sentences $\le 512$ chars).
 - **Split Distribution:**
-  - `train`: ~768,000 sentence pairs
-  - `validation`: 3,000 held-out sentence pairs
-  - `test`: 3,000 benchmark sentence pairs
+  - `train`: **763,594 sentence pairs**
+  - `validation`: **3,000 held-out sentence pairs**
+  - `test`: **3,000 benchmark sentence pairs**
 
 ---
 
