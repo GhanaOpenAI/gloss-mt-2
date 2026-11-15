@@ -152,7 +152,8 @@ def main():
             all_labels.append(labels)
         return Dataset.from_dict({"input_ids": all_input_ids, "labels": all_labels})
 
-    print(f"Preparing tokenized IOB datasets (up to {args.max_samples:,} train samples)...", flush=True)
+    sample_msg = f"{args.max_samples:,}" if args.max_samples else "ALL available"
+    print(f"Preparing tokenized IOB datasets ({sample_msg} train samples)...", flush=True)
     train_ds = prepare_data("train", max_n=args.max_samples)
     val_ds = prepare_data("validation", max_n=3000)
     print(f"Train: {len(train_ds):,} samples | Validation: {len(val_ds):,} samples", flush=True)
