@@ -60,24 +60,51 @@ Evaluated on held-out test splits with live SacreBLEU, chrF2, and post-translati
 
 ---
 
-## 🚀 Usage with `nkrane_mt`
+## 🚀 Usage
+
+### 1. Direct Translation (Pure Transformers)
+If you provide plain English text, the model generates fluent, complete Twi directly without any brackets:
+
+```python
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+
+tokenizer = AutoTokenizer.from_pretrained("ghanaopenai/nkrane-mt-opus-en2tw")
+model = AutoModelForSeq2SeqLM.from_pretrained("ghanaopenai/nkrane-mt-opus-en2tw")
+
+text = "The president of Ghana visited the military hospital in Accra yesterday."
+inputs = tokenizer(text, return_tensors="pt")
+outputs = model.generate(**inputs, max_new_tokens=128)
+print(tokenizer.batch_decode(outputs, skip_special_tokens=True)[0])
+# -> Ghana ɔmampanyin kɔsraa asraafo ayaresabea a ɛwɔ Accra no da a etwaam no.
+```
+
+### 2. Entity-Grounded Pipeline (`nkrane_mt`)
+To preserve specific entities or resolve them through an offline glossary and contextual reranker:
 
 ```bash
 pip install git+https://github.com/GhanaOpenAI/nkrane-mt.git
 ```
 
 ```python
-from nkrane_mt.inference import GlossMT2Translator
+from nkrane_mt.inference import NkraneMTTranslator
 
-translator = GlossMT2Translator(
-    model_name="ghanaopenai/nkrane-mt-opus-en2tw",
+translator = NkraneMTTranslator(
+    model="ghanaopenai/nkrane-mt-opus-en2tw",
     marker_model_name="ghanaopenai/nkrane-mt-marker-en",
-    direction="en-tw",
+    use_default_dictionary=True,  # Resolves preserved terms into Twi
 )
 
 result = translator.translate("The president of Ghana visited the military hospital in Accra yesterday.")
-print(result["final_translation"])
-# -> Ɔmampanyin a ɔwɔ Ghana kɔsra asraafoɔ ayaresabea a ɛwɔ Nkran nnera.
+print(result["translation"])
+# -> Ghana mampanyin no kɔsraa military ayaresabea no wɔ Nkran da a etwaam no.
+```
+
+You can also provide custom term mappings:
+```python
+result = translator.translate(
+    "The doctor gave medicine to the patient.",
+    custom_glossary={"patient": "ɔyarefoɔ"}
+)
 ```
 
 ---
