@@ -23,8 +23,7 @@ $VENV/bin/python training/train_marker.py \
     --batch-size 32 \
     --grad-accum 2 \
     --lr 3e-5 \
-    --max-samples 250000 \
-    --eval-steps 500 \
+    --eval-steps 1000 \
     --early-stopping-patience 5 \
     --push ghanaopenai/nkrane-mt-marker-en \
     >> "$LOG_DIR/train_marker.log" 2>&1

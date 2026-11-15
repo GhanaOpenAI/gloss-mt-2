@@ -19,14 +19,14 @@ $VENV/bin/python training/train_seq2seq.py \
     --data "$DATA" \
     --direction "$DIRECTION" \
     --out "$OUT" \
-    --epochs 25 \
+    --epochs 100 \
     --batch-size 32 \
     --grad-accum 2 \
     --lr 1e-4 \
     --max-src 512 \
     --max-tgt 512 \
-    --eval-steps 500 \
-    --early-stopping-patience 8 \
+    --eval-steps 1000 \
+    --early-stopping-patience 120 \
     --gen-eval-samples 300 \
     --push ghanaopenai/nkrane-mt-opus-en2tw \
     >> "$LOG_DIR/train_opus_mt_en2tw.log" 2>&1
