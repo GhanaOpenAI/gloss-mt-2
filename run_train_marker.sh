@@ -24,7 +24,7 @@ $VENV/bin/python training/train_marker.py \
     --grad-accum 2 \
     --lr 3e-5 \
     --eval-steps 1000 \
-    --early-stopping-patience 5 \
+    --early-stopping-patience 20 \
     --push ghanaopenai/nkrane-mt-marker-en \
     >> "$LOG_DIR/train_marker.log" 2>&1
 

@@ -123,7 +123,7 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-5)
     ap.add_argument("--max-samples", type=int, default=None, help="Max training samples (None = all samples)")
     ap.add_argument("--eval-steps", type=int, default=1000)
-    ap.add_argument("--early-stopping-patience", type=int, default=5)
+    ap.add_argument("--early-stopping-patience", type=int, default=20)
     ap.add_argument("--push", default=None, help="Optional HF repo id to push to")
     args = ap.parse_args()
 
