@@ -40,7 +40,7 @@ def load_multi_dictionary(dict_path: str) -> Dict[str, List[str]]:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--source-dataset", default="ghanaopenai/gloss-mt-2-en-tw", help="HF aligned dataset")
+    ap.add_argument("--source-dataset", default="ghanaopenai/nkrane-mt-parallel-corpus-eng-twi", help="HF aligned dataset")
     ap.add_argument("--dict-path", default="nkrane_mt/data/twi_dictionary.tsv.gz", help="Multi-candidate dictionary")
     ap.add_argument("--out-dir", default="data/reranker_dataset", help="Output directory")
     ap.add_argument("--negatives-per-pos", type=int, default=3, help="Number of negative distractors per positive")

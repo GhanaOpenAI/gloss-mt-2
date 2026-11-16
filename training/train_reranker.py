@@ -71,6 +71,7 @@ def main():
     ap.add_argument("--eval-steps", type=int, default=500)
     ap.add_argument("--early-stopping-patience", type=int, default=3)
     ap.add_argument("--warmup-steps", type=int, default=500)
+    ap.add_argument("--push", default=None, help="Optional HF repo id to push to")
     args = ap.parse_args()
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -164,6 +165,11 @@ def main():
 
     with open(os.path.join(args.out, "training_args.json"), "w") as f:
         json.dump(vars(args), f, indent=2)
+
+    if args.push:
+        print(f"Pushing model and tokenizer to Hugging Face {args.push}...", flush=True)
+        trainer.push_to_hub(args.push)
+        tok.push_to_hub(args.push)
 
     print("Reranker training complete!", flush=True)
 
