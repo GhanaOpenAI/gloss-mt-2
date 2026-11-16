@@ -206,7 +206,17 @@ class GlossMT2Translator:
             self.device = device or ("cuda:0" if torch.cuda.is_available() else "cpu")
             self.tokenizer = AutoTokenizer.from_pretrained(model)
             dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
-            self.raw_model = AutoModelForSeq2SeqLM.from_pretrained(model, dtype=dtype).to(self.device)
+
+            if "umt5" in model.lower():
+                from transformers import UMT5Config, UMT5ForConditionalGeneration
+
+                cfg = UMT5Config.from_pretrained(model)
+                cfg.tie_word_embeddings = False
+                cfg.model_type = "umt5"
+                self.raw_model = UMT5ForConditionalGeneration.from_pretrained(model, config=cfg, torch_dtype=dtype).to(self.device)
+            else:
+                self.raw_model = AutoModelForSeq2SeqLM.from_pretrained(model, dtype=dtype).to(self.device)
+
             self.raw_model.eval()
             self._is_hf_model = True
         else:

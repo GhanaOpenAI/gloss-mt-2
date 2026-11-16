@@ -124,7 +124,17 @@ def main():
 
     # Model
     dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
-    model = AutoModelForSeq2SeqLM.from_pretrained(args.model, torch_dtype=dtype).to(device)
+    is_umt5 = "umt5" in args.model.lower()
+    if is_umt5:
+        from transformers import UMT5Config, UMT5ForConditionalGeneration
+
+        cfg = UMT5Config.from_pretrained(args.model)
+        cfg.tie_word_embeddings = False
+        cfg.model_type = "umt5"
+        model = UMT5ForConditionalGeneration.from_pretrained(args.model, config=cfg, torch_dtype=dtype).to(device)
+    else:
+        model = AutoModelForSeq2SeqLM.from_pretrained(args.model, torch_dtype=dtype).to(device)
+
     if len(tok) > model.get_input_embeddings().weight.shape[0]:
         model.resize_token_embeddings(len(tok))
 
