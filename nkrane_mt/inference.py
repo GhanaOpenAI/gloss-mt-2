@@ -247,16 +247,20 @@ class GlossMT2Translator:
         auto_mark: bool = True,
         skip_substitution: bool = False,
         direct: bool = False,
+        max_src_length: int = 512,
+        max_new_tokens: int = 512,
     ) -> Dict:
         """
         Translates input text and applies optional smart contextual substitution.
 
         Args:
-            text: Input text to translate.
+            text: Input text to translate (supports single sentences or paragraphs up to 512 tokens).
             custom_glossary: Optional dictionary or list of terms to enforce.
             auto_mark: Whether to automatically detect and bracket entities in input.
             skip_substitution: If True, skips dictionary substitution and returns clean model output.
             direct: Shortcut for direct translation (sets auto_mark=False and skip_substitution=True).
+            max_src_length: Max input tokens (models trained up to 512 tokens).
+            max_new_tokens: Max generated tokens (models trained up to 512 tokens).
         """
         if direct:
             auto_mark = False
@@ -279,8 +283,8 @@ class GlossMT2Translator:
         if self._is_hf_model:
             import torch
 
-            inputs = self.tokenizer(marked_input, return_tensors="pt").to(self.device)
-            gen_kwargs = {"max_new_tokens": 256, "do_sample": False, "num_beams": 1}
+            inputs = self.tokenizer(marked_input, return_tensors="pt", truncation=True, max_length=max_src_length).to(self.device)
+            gen_kwargs = {"max_new_tokens": max_new_tokens, "do_sample": False, "num_beams": 1}
             if hasattr(self.tokenizer, "tgt_lang") and self.tokenizer.tgt_lang:
                 gen_kwargs["forced_bos_token_id"] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.tgt_lang)
             with torch.inference_mode():
@@ -321,7 +325,9 @@ class GlossMT2Translator:
         self,
         texts: List[str],
         batch_size: int = 64,
-        max_length: int = 256,
+        max_length: int = 512,
+        max_src_length: Optional[int] = None,
+        max_new_tokens: Optional[int] = None,
         auto_mark: bool = False,
         skip_substitution: bool = True,
         custom_glossary: Optional[Union[Dict, List]] = None,
@@ -334,10 +340,15 @@ class GlossMT2Translator:
         By default, runs in direct translation mode (auto_mark=False, skip_substitution=True)
         to bypass CPU dictionary bottlenecks and achieve maximum tokens/sec on ANY GPU.
 
+        Supports full multi-sentence paragraphs up to 512 tokens (the models' trained capacity).
+        Uses dynamic batch padding so short batches remain fast while long batches utilize the full window.
+
         Args:
-            texts: List of strings to translate.
-            batch_size: Number of sentences per GPU batch (e.g. 32-128 depending on VRAM).
-            max_length: Maximum target sequence length.
+            texts: List of strings (sentences or paragraphs) to translate.
+            batch_size: Number of texts per GPU batch (e.g. 32-128 depending on GPU VRAM).
+            max_length: Default sequence length ceiling (512 tokens).
+            max_src_length: Optional explicit input length limit (defaults to max_length=512).
+            max_new_tokens: Optional explicit output length limit (defaults to max_length=512).
             auto_mark: Whether to run noun phrase marking on input texts.
             skip_substitution: If True, returns clean direct translation without dictionary lookup.
             custom_glossary: Optional dictionary of terminology to substitute.
@@ -349,6 +360,9 @@ class GlossMT2Translator:
         """
         if not texts:
             return []
+
+        src_limit = max_src_length or max_length
+        tgt_limit = max_new_tokens or max_length
 
         merged_glossary = dict(self.custom_glossary)
         if custom_glossary:
@@ -388,11 +402,11 @@ class GlossMT2Translator:
                     return_tensors="pt",
                     padding=True,
                     truncation=True,
-                    max_length=max_length,
+                    max_length=src_limit,
                 ).to(self.device)
 
                 gen_kwargs = {
-                    "max_new_tokens": max_length,
+                    "max_new_tokens": tgt_limit,
                     "do_sample": False,
                     "num_beams": 1,
                 }
@@ -448,7 +462,9 @@ class GlossMT2Translator:
         self,
         texts_iter: Any,
         batch_size: int = 64,
-        max_length: int = 256,
+        max_length: int = 512,
+        max_src_length: Optional[int] = None,
+        max_new_tokens: Optional[int] = None,
         auto_mark: bool = False,
         skip_substitution: bool = True,
         custom_glossary: Optional[Union[Dict, List]] = None,
@@ -465,6 +481,8 @@ class GlossMT2Translator:
                     chunk,
                     batch_size=batch_size,
                     max_length=max_length,
+                    max_src_length=max_src_length,
+                    max_new_tokens=max_new_tokens,
                     auto_mark=auto_mark,
                     skip_substitution=skip_substitution,
                     custom_glossary=custom_glossary,
@@ -476,6 +494,8 @@ class GlossMT2Translator:
                 chunk,
                 batch_size=batch_size,
                 max_length=max_length,
+                max_src_length=max_src_length,
+                max_new_tokens=max_new_tokens,
                 auto_mark=auto_mark,
                 skip_substitution=skip_substitution,
                 custom_glossary=custom_glossary,

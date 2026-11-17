@@ -101,7 +101,7 @@ def main():
     ap.add_argument("--tgt-column", default="twi", help="Target column name for translated text")
     ap.add_argument("--split", default="train", help="Split to load if input is a Hugging Face dataset")
     ap.add_argument("--batch-size", type=int, default=64, help="Batch size for GPU forward passes")
-    ap.add_argument("--max-length", type=int, default=256, help="Max generated tokens")
+    ap.add_argument("--max-length", type=int, default=512, help="Max sequence length (input and output, models trained up to 512)")
     ap.add_argument("--limit", type=int, default=None, help="Optional row limit for quick tests")
     ap.add_argument("--with-glossary", action="store_true", help="Enable offline dictionary entity substitution")
     ap.add_argument("--device", default=None, help="Device to use (cuda:0, cpu, mps)")
