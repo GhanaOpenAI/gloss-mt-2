@@ -100,7 +100,7 @@ def main():
     ap.add_argument("--src-column", default="english", help="Column name containing English source text")
     ap.add_argument("--tgt-column", default="twi", help="Target column name for translated text")
     ap.add_argument("--split", default="train", help="Split to load if input is a Hugging Face dataset")
-    ap.add_argument("--batch-size", type=int, default=64, help="Batch size for GPU forward passes")
+    ap.add_argument("--batch-size", default="auto", help="Batch size for GPU forward passes (int, or 'auto' to saturate GPU VRAM)")
     ap.add_argument("--max-length", type=int, default=512, help="Max sequence length (input and output, models trained up to 512)")
     ap.add_argument("--limit", type=int, default=None, help="Optional row limit for quick tests")
     ap.add_argument("--with-glossary", action="store_true", help="Enable offline dictionary entity substitution")
@@ -122,6 +122,8 @@ def main():
 
     skip_sub = not args.with_glossary
     auto_mark = args.with_glossary
+
+    bs_arg = int(args.batch_size) if str(args.batch_size).isdigit() else args.batch_size
 
     print(f"Reading input from: {args.input} (column: {args.src_column})...", flush=True)
     print(f"Mode: {'Entity-Grounded Glossary' if args.with_glossary else 'Direct High-Speed (No Substitution)'}", flush=True)
@@ -149,8 +151,9 @@ def main():
         texts = [str(r.get(args.src_column, "") or "") for r in rows]
         translations = translator.translate_batch(
             texts=texts,
-            batch_size=args.batch_size,
-            max_length=args.max_length,
+            batch_size=bs_arg,
+            max_src_length=args.max_length,
+            max_new_tokens=args.max_length,
             auto_mark=auto_mark,
             skip_substitution=skip_sub,
             return_details=False,

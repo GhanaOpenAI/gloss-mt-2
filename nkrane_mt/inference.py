@@ -159,6 +159,40 @@ def substitute_glossary(
     return final_text, applied
 
 
+def _resolve_batch_size(device: Any, raw_model: Any, batch_size: Union[int, str] = "auto") -> int:
+    """Dynamically estimates the optimal GPU batch size based on VRAM and model parameter count."""
+    if isinstance(batch_size, int) and batch_size > 0:
+        return batch_size
+
+    import torch
+
+    if not torch.cuda.is_available() or str(device).lower() in ("cpu", "mps"):
+        return 16
+
+    try:
+        dev_idx = torch.cuda.current_device() if isinstance(device, str) and device == "cuda" else 0
+        if isinstance(device, str) and ":" in device:
+            dev_idx = int(device.split(":")[-1])
+        free_bytes, total_bytes = torch.cuda.mem_get_info(dev_idx)
+        total_gb = total_bytes / (1024**3)
+    except Exception:
+        total_gb = 16.0
+
+    num_params = getattr(raw_model, "num_parameters", lambda: 600_000_000)()
+
+    if total_gb >= 60.0:
+        # A100 80GB, H100, H200
+        return 256 if num_params < 200_000_000 else 128
+    elif total_gb >= 20.0:
+        # A10G 24GB, RTX 3090/4090, A100 40GB
+        return 128 if num_params < 200_000_000 else 64
+    elif total_gb >= 10.0:
+        # T4 16GB, RTX 3080/4070, V100
+        return 64 if num_params < 200_000_000 else 32
+    else:
+        return 16
+
+
 class GlossMT2Translator:
     """End-to-end translator for Nkrane-MT (formerly GLOSS-MT-2) models with optional contextual reranking.
 
@@ -216,6 +250,7 @@ class GlossMT2Translator:
             self.raw_model.eval()
             self._is_hf_model = True
         else:
+            self.device = device or getattr(model, "device", "cpu")
             self.raw_model = model
             self.tokenizer = getattr(model, "tokenizer", None)
             self._is_hf_model = False
@@ -324,7 +359,7 @@ class GlossMT2Translator:
     def translate_batch(
         self,
         texts: List[str],
-        batch_size: int = 64,
+        batch_size: Union[int, str] = "auto",
         max_length: int = 512,
         max_src_length: Optional[int] = None,
         max_new_tokens: Optional[int] = None,
@@ -337,15 +372,17 @@ class GlossMT2Translator:
         """
         High-throughput batched translation optimized for large datasets and full GPU saturation.
 
-        By default, runs in direct translation mode (auto_mark=False, skip_substitution=True)
-        to bypass CPU dictionary bottlenecks and achieve maximum tokens/sec on ANY GPU.
-
-        Supports full multi-sentence paragraphs up to 512 tokens (the models' trained capacity).
-        Uses dynamic batch padding so short batches remain fast while long batches utilize the full window.
+        By default:
+        - `batch_size="auto"` automatically inspects available GPU VRAM and model parameter size
+          to saturate the GPU (e.g. 256 on H100/H200, 128 on A100, 64 on A10G/3090, 32 on T4).
+        - Includes automatic Out-Of-Memory (OOM) recovery: if an extreme sequence length spikes memory,
+          it catches the error, clears the CUDA cache, halves the batch slice, and continues without crashing.
+        - Supports full multi-sentence paragraphs up to 512 tokens (the models' trained capacity).
+        - Uses dynamic batch padding so short batches remain fast while long batches utilize the full window.
 
         Args:
             texts: List of strings (sentences or paragraphs) to translate.
-            batch_size: Number of texts per GPU batch (e.g. 32-128 depending on GPU VRAM).
+            batch_size: Number of texts per GPU batch, or "auto" to detect optimal size from VRAM.
             max_length: Default sequence length ceiling (512 tokens).
             max_src_length: Optional explicit input length limit (defaults to max_length=512).
             max_new_tokens: Optional explicit output length limit (defaults to max_length=512).
@@ -363,23 +400,24 @@ class GlossMT2Translator:
 
         src_limit = max_src_length or max_length
         tgt_limit = max_new_tokens or max_length
+        step_size = _resolve_batch_size(self.device, self.raw_model, batch_size)
 
         merged_glossary = dict(self.custom_glossary)
         if custom_glossary:
             merged_glossary.update(normalize_glossary_input(custom_glossary))
 
-        iterator = range(0, len(texts), batch_size)
+        iterator = range(0, len(texts), step_size)
         if show_progress:
             try:
                 from tqdm import tqdm
-                iterator = tqdm(iterator, total=(len(texts) + batch_size - 1) // batch_size, desc="Translating batches")
+                iterator = tqdm(iterator, total=(len(texts) + step_size - 1) // step_size, desc="Translating batches")
             except ImportError:
                 pass
 
         results: List[Any] = []
 
         for i in iterator:
-            batch_texts = texts[i : i + batch_size]
+            batch_texts = texts[i : i + step_size]
             if not batch_texts:
                 continue
 
@@ -393,17 +431,9 @@ class GlossMT2Translator:
             else:
                 marked_batch = batch_texts
 
-            # Generation phase
+            # Generation phase with automatic OOM recovery
             if self._is_hf_model:
                 import torch
-
-                inputs = self.tokenizer(
-                    marked_batch,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=src_limit,
-                ).to(self.device)
 
                 gen_kwargs = {
                     "max_new_tokens": tgt_limit,
@@ -413,11 +443,32 @@ class GlossMT2Translator:
                 if hasattr(self.tokenizer, "tgt_lang") and self.tokenizer.tgt_lang:
                     gen_kwargs["forced_bos_token_id"] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.tgt_lang)
 
-                with torch.inference_mode():
-                    outputs = self.raw_model.generate(**inputs, **gen_kwargs)
+                def _forward_slice(slice_texts: List[str]) -> List[str]:
+                    if not slice_texts:
+                        return []
+                    try:
+                        inputs = self.tokenizer(
+                            slice_texts,
+                            return_tensors="pt",
+                            padding=True,
+                            truncation=True,
+                            max_length=src_limit,
+                        ).to(self.device)
 
-                raw_outputs = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
-                raw_outputs = [r.strip() for r in raw_outputs]
+                        with torch.inference_mode():
+                            outputs = self.raw_model.generate(**inputs, **gen_kwargs)
+
+                        decoded = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
+                        return [d.strip() for d in decoded]
+                    except Exception as err:
+                        if "out of memory" in str(err).lower() and len(slice_texts) > 1:
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                            mid = len(slice_texts) // 2
+                            return _forward_slice(slice_texts[:mid]) + _forward_slice(slice_texts[mid:])
+                        raise
+
+                raw_outputs = _forward_slice(marked_batch)
             elif hasattr(self.raw_model, "generate"):
                 raw_outputs = [self.raw_model.generate(m) for m in marked_batch]
             else:
