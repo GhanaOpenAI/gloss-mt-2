@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
-PROJ="/mnt/volume_d2wey28/projects/gloss-mt-2"
-cd "$PROJ/repo"
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$DIR"
 
-echo "[$(date '+%F %T')] Starting Nkrane-MT Training Pipeline (Marker + OPUS-MT)..."
+echo "[$(date '+%F %T')] Starting Nkrane-MT Training Pipeline..."
 
 # 1. Train Inference Noun Phrase Marker (to convergence)
 echo "[$(date '+%F %T')] [1/2] Training Inference Noun Phrase Marker..."
