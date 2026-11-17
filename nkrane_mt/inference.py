@@ -159,6 +159,70 @@ def substitute_glossary(
     return final_text, applied
 
 
+def chunk_text(text: str, max_tokens: int = 380, tokenizer: Any = None) -> List[str]:
+    """
+    Splits long text into coherent semantic chunks (paragraphs / sentences / clauses)
+    that safely fit inside the model's context window, preventing CUDA OOM and truncation loss.
+    """
+    if not text or not text.strip():
+        return [text] if text else []
+
+    def get_len(s: str) -> int:
+        if tokenizer is not None:
+            try:
+                return len(tokenizer.encode(s, add_special_tokens=False))
+            except Exception:
+                pass
+        return int(len(s.split()) * 1.3)
+
+    if get_len(text) <= max_tokens:
+        return [text]
+
+    paragraphs = re.split(r"\n\s*\n", text.strip())
+    chunks: List[str] = []
+    curr_parts: List[str] = []
+    curr_len = 0
+
+    for p in paragraphs:
+        p_len = get_len(p)
+        if p_len <= max_tokens:
+            if curr_len + p_len <= max_tokens:
+                curr_parts.append(p)
+                curr_len += p_len
+            else:
+                if curr_parts:
+                    chunks.append("\n\n".join(curr_parts))
+                curr_parts = [p]
+                curr_len = p_len
+        else:
+            sentences = re.split(r"(?<=[.!?])\s+", p.strip())
+            for s in sentences:
+                s_len = get_len(s)
+                if s_len > max_tokens:
+                    sub_clauses = re.split(r"(?<=[,;:])\s+", s)
+                    for c in sub_clauses:
+                        c_len = get_len(c)
+                        if curr_len + c_len > max_tokens and curr_parts:
+                            chunks.append(" ".join(curr_parts))
+                            curr_parts = [c]
+                            curr_len = c_len
+                        else:
+                            curr_parts.append(c)
+                            curr_len += c_len
+                elif curr_len + s_len > max_tokens and curr_parts:
+                    chunks.append(" ".join(curr_parts))
+                    curr_parts = [s]
+                    curr_len = s_len
+                else:
+                    curr_parts.append(s)
+                    curr_len += s_len
+
+    if curr_parts:
+        chunks.append("\n\n".join(curr_parts) if any("\n" in x for x in curr_parts) else " ".join(curr_parts))
+
+    return [c.strip() for c in chunks if c.strip()]
+
+
 def _resolve_batch_size(device: Any, raw_model: Any, batch_size: Union[int, str] = "auto") -> int:
     """Dynamically estimates the optimal GPU batch size based on VRAM and model parameter count."""
     if isinstance(batch_size, int) and batch_size > 0:
@@ -284,18 +348,21 @@ class GlossMT2Translator:
         direct: bool = False,
         max_src_length: int = 512,
         max_new_tokens: int = 512,
+        chunk_long_texts: bool = True,
     ) -> Dict:
         """
         Translates input text and applies optional smart contextual substitution.
 
         Args:
-            text: Input text to translate (supports single sentences or paragraphs up to 512 tokens).
+            text: Input text to translate (supports single sentences, paragraphs, or entire articles).
             custom_glossary: Optional dictionary or list of terms to enforce.
             auto_mark: Whether to automatically detect and bracket entities in input.
             skip_substitution: If True, skips dictionary substitution and returns clean model output.
             direct: Shortcut for direct translation (sets auto_mark=False and skip_substitution=True).
-            max_src_length: Max input tokens (models trained up to 512 tokens).
-            max_new_tokens: Max generated tokens (models trained up to 512 tokens).
+            max_src_length: Max input tokens per chunk (models trained up to 512 tokens).
+            max_new_tokens: Max generated tokens per chunk (models trained up to 512 tokens).
+            chunk_long_texts: If True, automatically segments texts exceeding context window into
+                             coherent chunks and reassembles them, avoiding OOM and truncation loss.
         """
         if direct:
             auto_mark = False
@@ -303,6 +370,32 @@ class GlossMT2Translator:
 
         if not text or not text.strip():
             return {"translation": "", "raw_translation": "", "marked_input": "", "substitutions": []}
+
+        # Handle over-length documents / long paragraphs via chunking & reassembly
+        if chunk_long_texts:
+            safe_chunk_budget = min(max_src_length - 32, 400)
+            chunks = chunk_text(text, max_tokens=safe_chunk_budget, tokenizer=self.tokenizer)
+            if len(chunks) > 1:
+                chunk_res = [
+                    self.translate(
+                        c,
+                        custom_glossary=custom_glossary,
+                        auto_mark=auto_mark,
+                        skip_substitution=skip_substitution,
+                        direct=direct,
+                        max_src_length=max_src_length,
+                        max_new_tokens=max_new_tokens,
+                        chunk_long_texts=False,
+                    )
+                    for c in chunks
+                ]
+                delimiter = "\n\n" if ("\n\n" in text) else " "
+                return {
+                    "translation": delimiter.join(r["translation"] for r in chunk_res),
+                    "raw_translation": delimiter.join(r["raw_translation"] for r in chunk_res),
+                    "marked_input": delimiter.join(r["marked_input"] for r in chunk_res),
+                    "substitutions": [s for r in chunk_res for s in r.get("substitutions", [])],
+                }
 
         merged_glossary = dict(self.custom_glossary)
         if custom_glossary:
@@ -368,6 +461,7 @@ class GlossMT2Translator:
         custom_glossary: Optional[Union[Dict, List]] = None,
         return_details: bool = False,
         show_progress: bool = False,
+        chunk_long_texts: bool = True,
     ) -> Union[List[str], List[Dict]]:
         """
         High-throughput batched translation optimized for large datasets and full GPU saturation.
@@ -375,6 +469,9 @@ class GlossMT2Translator:
         By default:
         - `batch_size="auto"` automatically inspects available GPU VRAM and model parameter size
           to saturate the GPU (e.g. 256 on H100/H200, 128 on A100, 64 on A10G/3090, 32 on T4).
+        - `chunk_long_texts=True` automatically detects paragraphs/documents that exceed the
+          context window, cleanly segments them into coherent sentence chunks, translates them
+          in parallel, and reassembles them, preventing OOM crashes and truncation loss.
         - Includes automatic Out-Of-Memory (OOM) recovery: if an extreme sequence length spikes memory,
           it catches the error, clears the CUDA cache, halves the batch slice, and continues without crashing.
         - Supports full multi-sentence paragraphs up to 512 tokens (the models' trained capacity).
@@ -391,6 +488,8 @@ class GlossMT2Translator:
             custom_glossary: Optional dictionary of terminology to substitute.
             return_details: If True, returns List[Dict] with metadata. If False (default), returns List[str].
             show_progress: If True, shows tqdm progress bar.
+            chunk_long_texts: If True, automatically segments texts exceeding context window into
+                             coherent chunks and reassembles them.
 
         Returns:
             List of translated strings, or list of result dicts if return_details=True.
@@ -400,6 +499,55 @@ class GlossMT2Translator:
 
         src_limit = max_src_length or max_length
         tgt_limit = max_new_tokens or max_length
+
+        if chunk_long_texts:
+            safe_chunk_budget = min(src_limit - 32, 400)
+            chunk_mapping = []
+            flattened_texts = []
+            any_chunked = False
+
+            for orig_idx, t in enumerate(texts):
+                chunks = chunk_text(t, max_tokens=safe_chunk_budget, tokenizer=self.tokenizer)
+                if len(chunks) > 1:
+                    any_chunked = True
+                chunk_mapping.append((orig_idx, len(chunks)))
+                flattened_texts.extend(chunks)
+
+            if any_chunked:
+                flat_results = self.translate_batch(
+                    texts=flattened_texts,
+                    batch_size=batch_size,
+                    max_length=max_length,
+                    max_src_length=max_src_length,
+                    max_new_tokens=max_new_tokens,
+                    auto_mark=auto_mark,
+                    skip_substitution=skip_substitution,
+                    custom_glossary=custom_glossary,
+                    return_details=return_details,
+                    show_progress=show_progress,
+                    chunk_long_texts=False,
+                )
+
+                reassembled = []
+                c_idx = 0
+                for orig_idx, count in chunk_mapping:
+                    orig_t = texts[orig_idx]
+                    delimiter = "\n\n" if ("\n\n" in orig_t) else " "
+                    parts = flat_results[c_idx : c_idx + count]
+                    c_idx += count
+
+                    if return_details:
+                        reassembled.append({
+                            "translation": delimiter.join(p["translation"] for p in parts),
+                            "raw_translation": delimiter.join(p["raw_translation"] for p in parts),
+                            "marked_input": delimiter.join(p["marked_input"] for p in parts),
+                            "substitutions": [s for p in parts for s in p.get("substitutions", [])],
+                        })
+                    else:
+                        reassembled.append(delimiter.join(parts))
+
+                return reassembled
+
         step_size = _resolve_batch_size(self.device, self.raw_model, batch_size)
 
         merged_glossary = dict(self.custom_glossary)

@@ -101,3 +101,32 @@ def test_translate_direct_and_batch():
     # 3. Stream translation
     streamed = list(translator.translate_stream(iter(texts), batch_size=2))
     assert streamed == batch_res
+
+
+def test_chunking_and_reassembly():
+    from nkrane_mt.inference import NkraneMTTranslator, chunk_text
+
+    # Test chunking helper
+    long_doc = "This is a sentence. " * 50
+    chunks = chunk_text(long_doc, max_tokens=30)
+    assert len(chunks) > 1
+    assert "".join(chunks).replace(" ", "") == long_doc.strip().replace(" ", "")
+
+    class DummyModel:
+        def generate(self, text):
+            return f"Twi({text})"
+
+    translator = NkraneMTTranslator(model=DummyModel())
+
+    # Mixed batch: short, very long paragraph, and another short sentence
+    mixed_input = [
+        "Short sentence one.",
+        "Sentence A. " * 30, # Triggers chunking
+        "Short sentence two."
+    ]
+
+    results = translator.translate_batch(mixed_input, max_length=50, chunk_long_texts=True)
+    assert len(results) == 3
+    assert results[0] == "Twi(Short sentence one.)"
+    assert results[2] == "Twi(Short sentence two.)"
+    assert "Twi(" in results[1]
