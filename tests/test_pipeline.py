@@ -70,3 +70,34 @@ def test_substitute_glossary_tw_to_en():
     assert "<" not in final
     assert ">" not in final
     assert len(applied) == 3
+
+
+def test_translate_direct_and_batch():
+    from nkrane_mt.inference import NkraneMTTranslator
+
+    class DummyModel:
+        def generate(self, text):
+            # Simulates model outputting natural Twi or preserved terms
+            return f"Twi: {text}"
+
+    translator = NkraneMTTranslator(
+        model=DummyModel(),
+        use_default_dictionary=False,
+    )
+
+    # 1. Direct translation (no marking, no dictionary substitution)
+    res = translator.translate("Hello world", direct=True)
+    assert res["translation"] == "Twi: Hello world"
+    assert res["substitutions"] == []
+
+    # 2. Batch translation
+    texts = ["First sentence", "Second sentence", "Third sentence"]
+    batch_res = translator.translate_batch(texts, batch_size=2, skip_substitution=True)
+    assert len(batch_res) == 3
+    assert batch_res[0] == "Twi: First sentence"
+    assert batch_res[1] == "Twi: Second sentence"
+    assert batch_res[2] == "Twi: Third sentence"
+
+    # 3. Stream translation
+    streamed = list(translator.translate_stream(iter(texts), batch_size=2))
+    assert streamed == batch_res

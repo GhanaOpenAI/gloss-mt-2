@@ -186,13 +186,9 @@ class GlossMT2Translator:
         self.direction = direction.lower()
         self.reranker = reranker
 
-        # Setup marker
-        if marker is not None:
-            self.marker = marker
-        elif marker_model_name:
-            self.marker = NounPhraseMarker(method="model", model_name_or_path=marker_model_name)
-        else:
-            self.marker = NounPhraseMarker(method="rules")
+        # Setup marker (lazy-loaded so direct translation starts in milliseconds)
+        self._marker = marker
+        self._marker_model_name = marker_model_name
 
         # Setup model / tokenizer
         self._is_hf_model = False
@@ -235,16 +231,37 @@ class GlossMT2Translator:
 
         self.custom_glossary = normalize_glossary_input(custom_glossary)
 
+    @property
+    def marker(self) -> NounPhraseMarker:
+        if self._marker is None:
+            if self._marker_model_name:
+                self._marker = NounPhraseMarker(method="model", model_name_or_path=self._marker_model_name)
+            else:
+                self._marker = NounPhraseMarker(method="rules")
+        return self._marker
+
     def translate(
         self,
         text: str,
         custom_glossary: Optional[Union[Dict, List]] = None,
         auto_mark: bool = True,
+        skip_substitution: bool = False,
+        direct: bool = False,
     ) -> Dict:
         """
-        Translates input text and applies smart contextual substitution.
-        Automatically marks targeted noun phrases on the input side with <...> if not already present.
+        Translates input text and applies optional smart contextual substitution.
+
+        Args:
+            text: Input text to translate.
+            custom_glossary: Optional dictionary or list of terms to enforce.
+            auto_mark: Whether to automatically detect and bracket entities in input.
+            skip_substitution: If True, skips dictionary substitution and returns clean model output.
+            direct: Shortcut for direct translation (sets auto_mark=False and skip_substitution=True).
         """
+        if direct:
+            auto_mark = False
+            skip_substitution = True
+
         if not text or not text.strip():
             return {"translation": "", "raw_translation": "", "marked_input": "", "substitutions": []}
 
@@ -263,16 +280,26 @@ class GlossMT2Translator:
             import torch
 
             inputs = self.tokenizer(marked_input, return_tensors="pt").to(self.device)
-            gen_kwargs = {"max_new_tokens": 256}
+            gen_kwargs = {"max_new_tokens": 256, "do_sample": False, "num_beams": 1}
             if hasattr(self.tokenizer, "tgt_lang") and self.tokenizer.tgt_lang:
                 gen_kwargs["forced_bos_token_id"] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.tgt_lang)
-            with torch.no_grad():
+            with torch.inference_mode():
                 outputs = self.raw_model.generate(**inputs, **gen_kwargs)
             raw_translation = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0].strip()
         elif hasattr(self.raw_model, "generate"):
             raw_translation = self.raw_model.generate(marked_input)
         else:
             raw_translation = str(self.raw_model(marked_input))
+
+        if skip_substitution:
+            clean_text = re.sub(r"<([^<>\n]+)>", r"\1", raw_translation)
+            clean_text = re.sub(r" +", " ", clean_text).strip()
+            return {
+                "translation": clean_text,
+                "raw_translation": raw_translation,
+                "marked_input": marked_input,
+                "substitutions": [],
+            }
 
         final_translation, substitutions = substitute_glossary(
             translation=raw_translation,
@@ -289,6 +316,171 @@ class GlossMT2Translator:
             "marked_input": marked_input,
             "substitutions": substitutions,
         }
+
+    def translate_batch(
+        self,
+        texts: List[str],
+        batch_size: int = 64,
+        max_length: int = 256,
+        auto_mark: bool = False,
+        skip_substitution: bool = True,
+        custom_glossary: Optional[Union[Dict, List]] = None,
+        return_details: bool = False,
+        show_progress: bool = False,
+    ) -> Union[List[str], List[Dict]]:
+        """
+        High-throughput batched translation optimized for large datasets and full GPU saturation.
+
+        By default, runs in direct translation mode (auto_mark=False, skip_substitution=True)
+        to bypass CPU dictionary bottlenecks and achieve maximum tokens/sec on ANY GPU.
+
+        Args:
+            texts: List of strings to translate.
+            batch_size: Number of sentences per GPU batch (e.g. 32-128 depending on VRAM).
+            max_length: Maximum target sequence length.
+            auto_mark: Whether to run noun phrase marking on input texts.
+            skip_substitution: If True, returns clean direct translation without dictionary lookup.
+            custom_glossary: Optional dictionary of terminology to substitute.
+            return_details: If True, returns List[Dict] with metadata. If False (default), returns List[str].
+            show_progress: If True, shows tqdm progress bar.
+
+        Returns:
+            List of translated strings, or list of result dicts if return_details=True.
+        """
+        if not texts:
+            return []
+
+        merged_glossary = dict(self.custom_glossary)
+        if custom_glossary:
+            merged_glossary.update(normalize_glossary_input(custom_glossary))
+
+        iterator = range(0, len(texts), batch_size)
+        if show_progress:
+            try:
+                from tqdm import tqdm
+                iterator = tqdm(iterator, total=(len(texts) + batch_size - 1) // batch_size, desc="Translating batches")
+            except ImportError:
+                pass
+
+        results: List[Any] = []
+
+        for i in iterator:
+            batch_texts = texts[i : i + batch_size]
+            if not batch_texts:
+                continue
+
+            # Marking phase (optional)
+            if auto_mark:
+                custom_keys = [k for k in merged_glossary.keys() if isinstance(k, str)]
+                marked_batch = [
+                    self.marker.mark(t, custom_terms=custom_keys)[0] if ("<" not in t or ">" not in t) else t
+                    for t in batch_texts
+                ]
+            else:
+                marked_batch = batch_texts
+
+            # Generation phase
+            if self._is_hf_model:
+                import torch
+
+                inputs = self.tokenizer(
+                    marked_batch,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=max_length,
+                ).to(self.device)
+
+                gen_kwargs = {
+                    "max_new_tokens": max_length,
+                    "do_sample": False,
+                    "num_beams": 1,
+                }
+                if hasattr(self.tokenizer, "tgt_lang") and self.tokenizer.tgt_lang:
+                    gen_kwargs["forced_bos_token_id"] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.tgt_lang)
+
+                with torch.inference_mode():
+                    outputs = self.raw_model.generate(**inputs, **gen_kwargs)
+
+                raw_outputs = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
+                raw_outputs = [r.strip() for r in raw_outputs]
+            elif hasattr(self.raw_model, "generate"):
+                raw_outputs = [self.raw_model.generate(m) for m in marked_batch]
+            else:
+                raw_outputs = [str(self.raw_model(m)) for m in marked_batch]
+
+            # Output processing phase
+            for inp, raw in zip(marked_batch, raw_outputs):
+                if skip_substitution:
+                    clean_text = re.sub(r"<([^<>\n]+)>", r"\1", raw)
+                    clean_text = re.sub(r" +", " ", clean_text).strip()
+                    if return_details:
+                        results.append({
+                            "translation": clean_text,
+                            "raw_translation": raw,
+                            "marked_input": inp,
+                            "substitutions": [],
+                        })
+                    else:
+                        results.append(clean_text)
+                else:
+                    final_text, subs = substitute_glossary(
+                        translation=raw,
+                        lookup=self.lookup,
+                        direction=self.direction,
+                        custom_glossary=merged_glossary,
+                        reranker=self.reranker,
+                        source_context=raw,
+                    )
+                    if return_details:
+                        results.append({
+                            "translation": final_text,
+                            "raw_translation": raw,
+                            "marked_input": inp,
+                            "substitutions": subs,
+                        })
+                    else:
+                        results.append(final_text)
+
+        return results
+
+    def translate_stream(
+        self,
+        texts_iter: Any,
+        batch_size: int = 64,
+        max_length: int = 256,
+        auto_mark: bool = False,
+        skip_substitution: bool = True,
+        custom_glossary: Optional[Union[Dict, List]] = None,
+    ):
+        """
+        Streaming batched generator for multi-gigabyte datasets (never loads full corpus into RAM).
+        Yields translated strings batch by batch.
+        """
+        chunk = []
+        for text in texts_iter:
+            chunk.append(text)
+            if len(chunk) >= batch_size:
+                yield from self.translate_batch(
+                    chunk,
+                    batch_size=batch_size,
+                    max_length=max_length,
+                    auto_mark=auto_mark,
+                    skip_substitution=skip_substitution,
+                    custom_glossary=custom_glossary,
+                    return_details=False,
+                )
+                chunk = []
+        if chunk:
+            yield from self.translate_batch(
+                chunk,
+                batch_size=batch_size,
+                max_length=max_length,
+                auto_mark=auto_mark,
+                skip_substitution=skip_substitution,
+                custom_glossary=custom_glossary,
+                return_details=False,
+            )
 
 
 # Alias for backwards and modern compatibility
