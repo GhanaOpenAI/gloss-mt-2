@@ -49,16 +49,17 @@ Post-translation lexical substitution and contextual word-sense disambiguation a
 
 ---
 
-## 🏛️ The Four Pillars of the Nkrane-MT Corpus
+## 🏛️ The Four Pillars of the Nkrane-MT Corpus (Data Provenance)
 
-The dataset draws from four distinct corpora to ensure comprehensive coverage across formal, colloquial, narrative, and technical registers:
+The dataset draws from four distinct corpora to ensure comprehensive coverage across formal, colloquial, narrative, and technical registers. For full research transparency and replicability:
 
-| Pillar | Source | Coverage & Style |
-|---|---|---|
-| **1. GHOK Parallel Corpus** | `ghananlpcommunity/ghok-parallel-en-twi` | STEM, technical, academic, health, and governance text |
-| **2. Pristine Twi-English** | `ghanaopenai/pristine-twi-english` | Balanced evenly across **Narrative (25%)**, **Dialogue (25%)**, **Storyful (25%)**, and **Monologue (25%)** |
-| **3. Ghanaian News Paragraphs** | `ghananlpcommunity/twi-english-paragraph-dataset_news` | Modern Ghanaian current affairs, local politics, economy, and community news |
-| **4. JW African Corpus** | Verse-aligned Akan Literature | Fluent everyday Akan literature, idiomatic expressions, and conversational dialogue |
+| Pillar | Training Pairs | Share | Domain & Source | Translation / Generation Method |
+|---|:---:|:---:|---|---|
+| **1. Ghanaian News (`news`)** | **227,543** | 29.8% | Ghanaian news articles, politics, infrastructure, and current affairs (`ghananlpcommunity/twi-english-paragraph-dataset_news`) | Machine translated using Meta **NLLB-200 3.3B** (`facebook/nllb-200-3.3B`) |
+| **2. JW African Corpus (`jw`)** | **194,856** | 25.5% | High-register literature, historical accounts, and moral philosophy (`AfricaCorpusLoader` / JW) | **100% Human translation** by professional native Akan translators |
+| **3. Pristine Twi-English (`pristine_*`)** | **320,944** | 42.0% | Balanced evenly across **Monologue (17.5%)**, **Narrative (16.5%)**, **Dialogue (6.4%)**, and **Storyful (1.6%)** (`ghanaopenai/pristine-twi-english`) | Synthesized using **Google Gemini** using authentic Ghanaian news articles as domain reference |
+| **4. GHOK Parallel Corpus (`ghok`)** | **20,251** | 2.7% | Academic research papers, scientific abstracts, and governance (`ghananlpcommunity/ghok-parallel-en-twi`) | Machine translated using **Google Translate** |
+| **TOTAL** | **763,594** | 100% | *(+ 3,000 validation + 3,000 test splits)* | **769,594 Total Pairs** |
 
 ---
 

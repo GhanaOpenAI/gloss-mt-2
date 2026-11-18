@@ -137,6 +137,21 @@ print(res["translation"])
 
 ---
 
+## 🏛️ Dataset Provenance & 4 Core Pillars
+
+The **769,594-pair [Nkrane-MT Parallel Corpus](https://huggingface.co/datasets/ghanaopenai/nkrane-mt-parallel-corpus-eng-twi)** was built across four balanced linguistic pillars (full details in [`docs/data_provenance.md`](docs/data_provenance.md)):
+
+| Pillar | Training Pairs | Share | Domain & Origin | Translation / Generation Method |
+| :--- | :---: | :---: | :--- | :--- |
+| **`news`** | **227,543** | 29.8% | Ghanaian News (`twi-english-paragraph-dataset_news`) | Machine translated using Meta **NLLB-200 3.3B** |
+| **`jw`** | **194,856** | 25.5% | Watchtower Akan Corpus (`AfricaCorpusLoader`) | **100% Human translation** by native Akan linguists |
+| **`pristine_*`** | **320,944** | 42.0% | Literary & dialogue registers (`pristine-twi-english`) | Synthesized with **Google Gemini** using news as domain anchor |
+| **`ghok`** | **20,251** | 2.7% | Academic & scientific papers (`ghok-parallel-en-twi`) | Machine translated using **Google Translate** |
+
+*All 769k pairs were processed through **Gemini 3.8 Live API** (batches of 10) for dual-sided entity grounding with strict abstract noun filtering.*
+
+---
+
 ## 🛠️ Training Scripts (100% Portable)
 
 All training runners automatically download the dataset from Hugging Face if no local cache is found:
