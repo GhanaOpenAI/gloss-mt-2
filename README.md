@@ -3,6 +3,7 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![GitHub](https://img.shields.io/badge/GitHub-GhanaOpenAI%2Fnkrane--mt-black.svg)](https://github.com/GhanaOpenAI/nkrane-mt)
 [![Dataset](https://img.shields.io/badge/Dataset-769k_Parallel_Corpus-yellow.svg)](https://huggingface.co/datasets/ghanaopenai/nkrane-mt-parallel-corpus-eng-twi)
+[![NLLB-1.3B](https://img.shields.io/badge/Model-NLLB--200_1.3B-purple.svg)](https://huggingface.co/ghanaopenai/nkrane-mt-nllb-1.3b-en2tw)
 [![NLLB-600M](https://img.shields.io/badge/Model-NLLB--200_600M-blue.svg)](https://huggingface.co/ghanaopenai/nkrane-mt-nllb-600m-en2tw)
 [![OPUS-MT](https://img.shields.io/badge/Model-OPUS--MT-green.svg)](https://huggingface.co/ghanaopenai/nkrane-mt-opus-en2tw)
 [![uMT5-Base](https://img.shields.io/badge/Model-uMT5--Base-red.svg)](https://huggingface.co/ghanaopenai/nkrane-mt-umt5-base-en2tw)
@@ -21,6 +22,7 @@ Models fine-tuned on the **769,594-pair [Nkrane-MT Parallel Corpus](https://hugg
 
 | Model | Architecture | Parameters | SacreBLEU | chrF2 | Validation Loss | Hugging Face Hub |
 | :--- | :--- | :---: | :---: | :---: | :---: | :--- |
+| **Meta NLLB-200 1.3B** 🏆 | Seq2Seq (Enc-Dec) | 1.37B | **33.85** | **55.51** | **0.5815** | [`ghanaopenai/nkrane-mt-nllb-1.3b-en2tw`](https://huggingface.co/ghanaopenai/nkrane-mt-nllb-1.3b-en2tw) |
 | **Meta NLLB-200 600M** 🥇 | Seq2Seq (Enc-Dec) | 600M | **31.57** | **53.34** | **0.6976** | [`ghanaopenai/nkrane-mt-nllb-600m-en2tw`](https://huggingface.co/ghanaopenai/nkrane-mt-nllb-600m-en2tw) |
 | **Helsinki OPUS-MT** 🥈 | Marian Seq2Seq | 77M | **29.72** | **50.34** | **1.5510** | [`ghanaopenai/nkrane-mt-opus-en2tw`](https://huggingface.co/ghanaopenai/nkrane-mt-opus-en2tw) |
 | **Google uMT5-Base** 🥉 | UniMax T5 | 580M | **22.01** | **41.75** | **1.3270** | [`ghanaopenai/nkrane-mt-umt5-base-en2tw`](https://huggingface.co/ghanaopenai/nkrane-mt-umt5-base-en2tw) |
